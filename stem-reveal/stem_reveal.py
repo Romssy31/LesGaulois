@@ -454,7 +454,8 @@ def init_render(state):
     G["f_tag"] = skia.Font(tf("Inter-Bold.otf"), 22)
     G["f_cta"] = skia.Font(tf("InterDisplay-ExtraBold.otf"), 40)
     G["f_cta2"] = skia.Font(tf("Inter-Medium.otf"), 28)
-    for f in ("f_title", "f_count", "f_small", "f_tag", "f_cta", "f_cta2"):
+    G["f_counter"] = skia.Font(tf("InterDisplay-ExtraBold.otf"), 76)
+    for f in ("f_title", "f_count", "f_small", "f_tag", "f_cta", "f_cta2", "f_counter"):
         G[f].setEdging(skia.Font.Edging.kSubpixelAntiAlias)
     rng = np.random.default_rng(7)
     G["bubbles"] = np.c_[rng.uniform(0, W, 75), rng.uniform(0, H, 75), rng.uniform(14, 42, 75),
@@ -664,7 +665,62 @@ def draw_ball(c, t, fade, pulse):
     c.drawCircle(x, y, BALL_R, core)
 
 
+def draw_finale(c, i, dt, pulse, cx, cy):
+    """Radial spectrum + drop flash + call to action (shared by every mode)."""
+    skia = G["skia"]
+    accent = G["accent"]
+    glow = lambda sigma: skia.MaskFilter.MakeBlur(skia.kNormal_BlurStyle, sigma)
+    spec = G["spec"][min(i, len(G["spec"]) - 1)]
+    nb = len(spec)
+    appear = ease_out(dt / 0.5)
+    Rc = (150 + 18 * pulse) * (0.6 + 0.4 * appear)
+    sp = skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=3.2,
+                    StrokeCap=skia.Paint.kRound_Cap)
+    gp = skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=7,
+                    StrokeCap=skia.Paint.kRound_Cap, MaskFilter=glow(9))
+    gp.setColor4f(rgba(*accent, 0.35 * appear))
+    sp.setColor4f(rgba(225, 232, 245, 0.75 * appear))
+    path_g, path_s = skia.Path(), skia.Path()
+    for side in (-1, 1):
+        for k in range(nb):
+            ang = math.radians(-90 + side * (k + 0.5) / nb * 180)
+            ln = (10 + 300 * float(spec[k])) * appear
+            x0, y0 = cx + (Rc + 8) * math.cos(ang), cy + (Rc + 8) * math.sin(ang)
+            x1, y1 = cx + (Rc + 8 + ln) * math.cos(ang), cy + (Rc + 8 + ln) * math.sin(ang)
+            for pth in (path_g, path_s):
+                pth.moveTo(x0, y0)
+                pth.lineTo(x1, y1)
+    c.drawPath(path_g, gp)
+    c.drawPath(path_s, sp)
+    cp = skia.Paint(AntiAlias=True)
+    cp.setColor4f(rgba(4, 5, 8, 1))
+    c.drawCircle(cx, cy, Rc, cp)
+    rp = skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=6)
+    rp.setColor4f(rgba(70, 80, 98, 0.9))
+    c.drawCircle(cx, cy, Rc, rp)
+    rp2 = skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=3, MaskFilter=glow(10))
+    rp2.setColor4f(rgba(*accent, 0.25 + 0.5 * pulse))
+    c.drawCircle(cx, cy, Rc + 4, rp2)
+    # drop flash
+    if dt < 0.45:
+        fl = skia.Paint()
+        fl.setColor4f(rgba(255, 255, 255, 0.45 * (1 - dt / 0.45) ** 2))
+        c.drawRect(skia.Rect(0, 0, W, H), fl)
+    # call to action
+    ca = ease_out((dt - 3.0) / 0.6)
+    if ca > 0:
+        p1 = skia.Paint(AntiAlias=True)
+        p1.setColor4f(rgba(*accent, ca))
+        text_c(c, G["cta"][0], G["f_cta"], cx, 1500 + 20 * (1 - ca), p1)
+        p2 = skia.Paint(AntiAlias=True)
+        p2.setColor4f(rgba(150, 160, 178, ca))
+        text_c(c, G["cta"][1], G["f_cta2"], cx, 1548 + 20 * (1 - ca), p2)
+
+
 def render_frame(i):
+    if G.get("mode") == "escape":
+        import escape_mode
+        return escape_mode.render_frame(i)
     skia = G["skia"]
     t = i / FPS
     st = G["stage_times"]
@@ -710,51 +766,7 @@ def render_frame(i):
             draw_rings(c, t, 5, out, pulse)
             draw_escape(c, t)
             draw_ball(c, t, out, pulse)
-        spec = G["spec"][min(i, len(G["spec"]) - 1)]
-        nb = len(spec)
-        appear = ease_out(dt / 0.5)
-        Rc = (150 + 18 * pulse) * (0.6 + 0.4 * appear)
-        sp = skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=3.2,
-                        StrokeCap=skia.Paint.kRound_Cap)
-        gp = skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=7,
-                        StrokeCap=skia.Paint.kRound_Cap, MaskFilter=glow(9))
-        gp.setColor4f(rgba(*accent, 0.35 * appear))
-        sp.setColor4f(rgba(225, 232, 245, 0.75 * appear))
-        path_g, path_s = skia.Path(), skia.Path()
-        for side in (-1, 1):
-            for k in range(nb):
-                ang = math.radians(-90 + side * (k + 0.5) / nb * 180)
-                ln = (10 + 300 * float(spec[k])) * appear
-                x0, y0 = cx + (Rc + 8) * math.cos(ang), cy + (Rc + 8) * math.sin(ang)
-                x1, y1 = cx + (Rc + 8 + ln) * math.cos(ang), cy + (Rc + 8 + ln) * math.sin(ang)
-                for pth in (path_g, path_s):
-                    pth.moveTo(x0, y0)
-                    pth.lineTo(x1, y1)
-        c.drawPath(path_g, gp)
-        c.drawPath(path_s, sp)
-        cp = skia.Paint(AntiAlias=True)
-        cp.setColor4f(rgba(4, 5, 8, 1))
-        c.drawCircle(cx, cy, Rc, cp)
-        rp = skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=6)
-        rp.setColor4f(rgba(70, 80, 98, 0.9))
-        c.drawCircle(cx, cy, Rc, rp)
-        rp2 = skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=3, MaskFilter=glow(10))
-        rp2.setColor4f(rgba(*accent, 0.25 + 0.5 * pulse))
-        c.drawCircle(cx, cy, Rc + 4, rp2)
-        # drop flash
-        if dt < 0.45:
-            fl = skia.Paint()
-            fl.setColor4f(rgba(255, 255, 255, 0.45 * (1 - dt / 0.45) ** 2))
-            c.drawRect(skia.Rect(0, 0, W, H), fl)
-        # call to action
-        ca = ease_out((dt - 3.0) / 0.6)
-        if ca > 0:
-            p1 = skia.Paint(AntiAlias=True)
-            p1.setColor4f(rgba(*accent, ca))
-            text_c(c, G["cta"][0], G["f_cta"], cx, 1500 + 20 * (1 - ca), p1)
-            p2 = skia.Paint(AntiAlias=True)
-            p2.setColor4f(rgba(150, 160, 178, ca))
-            text_c(c, G["cta"][1], G["f_cta2"], cx, 1548 + 20 * (1 - ca), p2)
+        draw_finale(c, i, dt, pulse, cx, cy)
 
     # header: handle, title (pops on each change), counter
     hp_ = skia.Paint(AntiAlias=True)
@@ -813,10 +825,20 @@ def render_video(audio, stage_times, out_beats, opts, out_path, workdir, progres
     wav = os.path.join(workdir, "mix.wav")
     write_wav(wav, audio)
     o = dict(DEFAULT_OPTS, **{k: v for k, v in (opts or {}).items() if v is not None})
-    accent = tuple(int(o["accent"].lstrip("#")[k:k + 2], 16) for k in (0, 2, 4))
     state = dict(stage_times=stage_times, duration=duration, pulse=pulse, level=level, spec=spec,
-                 accent=accent, handle=o["handle"], credit=o["credit"],
+                 accent=hex_rgb(o["accent"]), handle=o["handle"], credit=o["credit"],
                  cta=(o["cta"], o["cta2"]), ball=plan_ball(stage_times, out_beats))
+    encode_frames(state, n_frames, wav, out_path, workdir, progress)
+
+
+def hex_rgb(h):
+    h = h.lstrip("#")
+    return tuple(int(h[k:k + 2], 16) for k in (0, 2, 4))
+
+
+def encode_frames(state, n_frames, wav, out_path, workdir, progress=None):
+    """Render all frames in parallel (one video segment per worker) and mux the audio."""
+    duration = n_frames / FPS
     seg_dir = os.path.join(workdir, f"segments_{os.getpid()}_{int(time.time())}")
     os.makedirs(seg_dir, exist_ok=True)
     step = FPS * 4
@@ -927,6 +949,11 @@ def main():
     ap.add_argument("--max-duration", type=float, help="maximum video length (s)")
     ap.add_argument("--stage-bars", help='bars per build stage, e.g. "2,4,4,4,4" (muffled,vocals,melody,bass,drums)')
     ap.add_argument("--full-bars", type=int, help="bars of the FULL SONG part (default: auto)")
+    ap.add_argument("--mode", choices=("layers", "escape"), default="layers",
+                    help="layers = 5 rings, one layer each; escape = many rings, muffled until the ball escapes")
+    ap.add_argument("--rings", type=int, default=500, help="escape mode: number of rings")
+    ap.add_argument("--pre-bars", type=int, default=16, help="escape mode: bars before the hook")
+    ap.add_argument("--drop-bars", type=int, help="escape mode: bars of the hook (default: auto)")
     ap.add_argument("--handle", default="@yourhandle")
     ap.add_argument("--credit", default="", help='e.g. "Song Title — Artist" (shown on FULL SONG)')
     ap.add_argument("--accent", default="#9FB4FF")
@@ -940,6 +967,13 @@ def main():
     ctx = load_song(args.song, args.stems, args.workdir)
     hook = hook_bar_at(ctx, args.start) if args.start is not None else None
     opts = dict(handle=args.handle, credit=args.credit, accent=args.accent, cta=args.cta, cta2=args.cta2)
+    if args.mode == "escape":
+        import escape_mode
+        plan = escape_mode.make_escape_video(
+            ctx, args.out, hook, opts, min_duration=args.min_duration, max_duration=args.max_duration,
+            rings=args.rings, pre_bars=args.pre_bars, drop_bars=args.drop_bars)
+        log("plan:", json.dumps(plan))
+        return
     sb = [int(x) for x in args.stage_bars.split(",")] if args.stage_bars else None
     plan = make_video(ctx, args.out, hook, args.min_duration, opts,
                       max_duration=args.max_duration, stage_bars=sb, full_bars=args.full_bars)
@@ -947,4 +981,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # run through the importable module so worker processes share the same state
+    sys.path.insert(0, HERE)
+    import stem_reveal
+    stem_reveal.main()

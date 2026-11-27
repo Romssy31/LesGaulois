@@ -66,6 +66,12 @@
   .presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
   .presets button.on { border-color: var(--accent); color: var(--accent2); }
   .err { color: var(--err) !important; }
+  .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+  .modes button { text-align: left; padding: 12px 14px; }
+  .modes button b { display: block; font-size: 15px; }
+  .modes button span { color: var(--muted); font-size: 12.5px; }
+  .modes button.on { border-color: var(--accent); background: #18223a; }
+  .modes button.on b { color: var(--accent2); }
   table { border-collapse: collapse; font-size: 13px; width: 100%; }
   td { padding: 4px 6px; border-bottom: 1px solid var(--line); }
   td:last-child { text-align: right; color: var(--accent2); font-variant-numeric: tabular-nums; }
@@ -91,7 +97,11 @@
 
   <!-- 2. timing -->
   <div class="card hidden" id="c-timing">
-    <h2><span class="step">2</span> Timing calculé sur la musique</h2>
+    <h2><span class="step">2</span> Type de vidéo et timing calculé sur la musique</h2>
+    <div class="modes" id="modes">
+      <button data-m="layers" class="on"><b>Couches</b><span>5 anneaux · la bille sort d'un anneau = une couche en plus (voix, mélodie, basse, batterie, drop)</span></button>
+      <button data-m="escape"><b>Échappée</b><span>des centaines d'anneaux · musique étouffée quand la bille rebondit, claire quand elle passe la fente</span></button>
+    </div>
     <div class="chips" id="chips"></div>
     <canvas id="wave" height="170"></canvas>
     <div class="row">
@@ -112,11 +122,16 @@
         <button data-p="long">Longue (≈ 1 min 30)</button>
       </div>
       <div class="dgrid" id="dgrid"></div>
+      <div class="dgrid hidden" id="egrid">
+        <label><b>Nombre d'anneaux</b><input type="number" id="e-rings" value="500" min="20" max="3000" step="10"><small>compteur au centre</small></label>
+        <label><b>Avant le refrain</b><input type="number" id="e-pre" value="16" min="4" max="64" step="4"><small id="es-pre"></small></label>
+        <label><b>Refrain (tout clair)</b><input type="number" id="e-drop" min="1" max="64" step="1" placeholder="auto"><small id="es-drop"></small></label>
+      </div>
       <div class="grid" style="margin-top:12px">
         <label>Durée minimale de la vidéo (s)<input type="number" id="o-min" value="62" min="5" max="600" step="1"></label>
         <label>Durée maximale de la vidéo (s) — vide = pas de limite<input type="number" id="o-max" value="" min="5" max="600" step="1" placeholder="aucune"></label>
       </div>
-      <div class="row"><span class="hint">Les durées sont en <b>mesures</b> pour que chaque changement tombe sur la musique. La partie FULL SONG en « auto » s'allonge jusqu'à la durée minimale, et elle est raccourcie si la durée maximale est dépassée.</span></div>
+      <div class="row"><span class="hint" id="dur-hint"></span></div>
     </div>
     <audio id="montage" controls preload="auto"></audio>
   </div>
@@ -126,7 +141,7 @@
     <h2><span class="step">3</span> Personnaliser et générer</h2>
     <div class="grid">
       <label>Ton pseudo<input type="text" id="o-handle" value="@yourhandle"></label>
-      <label>Titre — Artiste (affiché sur FULL SONG, optionnel)<input type="text" id="o-credit" placeholder="Song — Artist"></label>
+      <label>Titre — Artiste (affiché à la fin, optionnel)<input type="text" id="o-credit" placeholder="Song — Artist"></label>
       <label>Texte final<input type="text" id="o-cta" value="FOLLOW FOR THE NEXT DROP"></label>
       <label>Sous-texte final<input type="text" id="o-cta2" value="new songs every day"></label>
       <label>Couleur d'accent<input type="color" id="o-accent" value="#9fb4ff"></label>
@@ -157,7 +172,27 @@ const STAGES = ["MUFFLED VOCALS", "VOCALS", "+ MELODY", "+ BASS", "+ DRUMS", "FU
 const STAGE_COL = ["#3a4560", "#4a5a86", "#5b6fb0", "#6f86d6", "#8aa0f0", "#c7d3ff"];
 const STAGE_LABEL = { decode: "Lecture du fichier…", separate: "Séparation des pistes (voix, mélodie, basse, batterie)…",
                       analyze: "Détection du tempo, des mesures et du refrain…", render: "Rendu de la vidéo…" };
-let song = null, hook = null, plan = null, previewTimer = null, previewSeq = 0, customStages = false;
+let song = null, hook = null, plan = null, previewTimer = null, previewSeq = 0, customStages = false, mode = "layers";
+const ESC_PRESETS = {
+  court: { pre: 8, drop: "", rings: 250, min: 25, max: 35 },
+  standard: { pre: 16, drop: "", rings: 500, min: 62, max: 75 },
+  long: { pre: 24, drop: "", rings: 900, min: 90, max: 120 },
+};
+const DUR_HINT = {
+  layers: "Les durées sont en <b>mesures</b> pour que chaque changement tombe sur la musique. La partie FULL SONG en « auto » s'allonge jusqu'à la durée minimale, et elle est raccourcie si la durée maximale est dépassée.",
+  escape: "La vidéo démarre « Avant le refrain » mesures avant le refrain : la bille y passe la fente à la fin de chaque phrase de 4 mesures, de plus en plus longtemps. Pendant le refrain tout est clair, et le compteur arrive à 0 pile à la fin. Le refrain en « auto » s'allonge jusqu'à la durée minimale.",
+};
+document.querySelectorAll("#modes button").forEach((b) => b.onclick = () => setMode(b.dataset.m));
+function setMode(m) {
+  mode = m;
+  document.querySelectorAll("#modes button").forEach((b) => b.classList.toggle("on", b.dataset.m === m));
+  $("dgrid").classList.toggle("hidden", m !== "layers");
+  $("egrid").classList.toggle("hidden", m !== "escape");
+  $("dur-hint").innerHTML = DUR_HINT[m];
+  markPreset(null); plan = null;
+  if (song) { $("timeline").innerHTML = ""; drawWave(); durChanged(); }
+}
+["e-rings", "e-pre", "e-drop"].forEach((id) => $(id).addEventListener("input", () => { markPreset(null); durChanged(); }));
 const PRESETS = {
   court: { stages: [1, 2, 2, 2, 2], full: "", min: 25, max: 35 },
   standard: { stages: [2, 4, 4, 4, 4], full: "", min: 62, max: 75 },
@@ -172,15 +207,23 @@ function buildDurInputs() {
   for (let i = 0; i < 6; i++) $(`sb${i}`).addEventListener("input", () => { if (i < 5) customStages = true; markPreset(null); durChanged(); });
 }
 function updateSecs() {
+  const pre = +$("e-pre").value, drop = +$("e-drop").value;
+  $("es-pre").textContent = pre ? `${pre} mes. ≈ ${(pre * barSec()).toFixed(1)} s` : "";
+  $("es-drop").textContent = drop ? `${drop} mes. ≈ ${(drop * barSec()).toFixed(1)} s`
+    : (plan && plan.mode === "escape" ? `auto : ${plan.drop_bars} mes. ≈ ${(plan.drop_bars * plan.bar_s).toFixed(1)} s` : "");
+  if (!$("sb0")) return;
   for (let i = 0; i < 6; i++) {
     const v = +$(`sb${i}`).value;
     let txt = v ? `${v} mes. ≈ ${(v * barSec()).toFixed(1)} s` : "";
-    if (i === 5 && !v && plan) txt = `auto : ${plan.full_bars} mes. ≈ ${(plan.duration_s - plan.stage_starts_s[5]).toFixed(1)} s`;
+    if (i === 5 && !v && plan && plan.mode !== "escape") txt = `auto : ${plan.full_bars} mes. ≈ ${(plan.duration_s - plan.stage_starts_s[5]).toFixed(1)} s`;
     $(`ss${i}`).textContent = txt;
   }
 }
 function timing() {
-  const t = { min_duration: +$("o-min").value || 62, max_duration: +$("o-max").value || null,
+  if (mode === "escape")
+    return { mode, min_duration: +$("o-min").value || 62, max_duration: +$("o-max").value || null,
+             rings: +$("e-rings").value || 500, pre_bars: +$("e-pre").value || 16, drop_bars: +$("e-drop").value || null };
+  const t = { mode, min_duration: +$("o-min").value || 62, max_duration: +$("o-max").value || null,
               full_bars: +$("sb5").value || null };
   if (customStages) t.stage_bars = [0, 1, 2, 3, 4].map((i) => Math.max(1, +$(`sb${i}`).value || 1));
   return t;
@@ -188,6 +231,12 @@ function timing() {
 function markPreset(name) { document.querySelectorAll(".presets button").forEach((b) => b.classList.toggle("on", b.dataset.p === name)); }
 function durChanged() { updateSecs(); if (song) schedulePreview(400); }
 document.querySelectorAll(".presets button").forEach((b) => b.onclick = () => {
+  if (mode === "escape") {
+    const e = ESC_PRESETS[b.dataset.p];
+    $("e-pre").value = e.pre; $("e-drop").value = e.drop; $("e-rings").value = e.rings;
+    $("o-min").value = e.min; $("o-max").value = e.max;
+    markPreset(b.dataset.p); durChanged(); return;
+  }
   const p = PRESETS[b.dataset.p];
   p.stages.forEach((v, i) => $(`sb${i}`).value = v);
   $("sb5").value = p.full; $("o-min").value = p.min; $("o-max").value = p.max;
@@ -250,7 +299,7 @@ function loadSong(res) {
   $("orig").src = res.audio_url;
   ["c-timing", "c-render"].forEach((id) => $(id).classList.remove("hidden"));
   $("c-result").classList.add("hidden");
-  buildDurInputs(); customStages = false; markPreset(null);
+  buildDurInputs(); customStages = false; markPreset(null); $("dur-hint").innerHTML = DUR_HINT[mode];
   drawWave(); schedulePreview(0);
   $("c-timing").scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -272,7 +321,10 @@ function drawWave() {
   const D = song.duration, X = (t) => (t / D) * w, mid = h / 2;
   const bars = song.bars;
   // sections used by the video
-  if (plan) {
+  if (plan && plan.mode === "escape") {
+    g.fillStyle = "rgba(159,180,255,0.10)";
+    g.fillRect(X(plan.segment_start_s), 0, X(plan.segment_start_s + plan.duration_s) - X(plan.segment_start_s), h);
+  } else if (plan) {
     const hb = plan.hook_bar, endFull = bars[Math.min(bars.length - 1, hb + plan.full_bars)] ?? D;
     g.fillStyle = "rgba(159,180,255,0.10)"; g.fillRect(X(bars[hb]), 0, X(endFull) - X(bars[hb]), h);
   }
@@ -328,15 +380,32 @@ async function runPreview() {
     if (seq !== previewSeq) return;
     plan = r.plan; $("montage").src = r.audio_url;
     $("plan-hint").classList.remove("err");
-    if (!customStages) plan.stage_bars.forEach((v, i) => $(`sb${i}`).value = v);
+    if (plan.mode !== "escape" && !customStages) plan.stage_bars.forEach((v, i) => $(`sb${i}`).value = v);
     updateSecs();
     drawTimeline(); drawWave();
+    if (plan.mode === "escape") {
+      const nC = plan.phases.filter((p) => p[2] === "C").length;
+      $("plan-hint").textContent = `${nC} passages dans la fente, chacun commence et finit sur un temps ; la bille rebondit sur chaque temps. ` +
+        `Le compteur arrive à 0 à ${fmt(plan.finale_s)}. Écoute le montage ci-dessous avant de générer.`;
+      return;
+    }
     $("plan-hint").textContent = `Chaque étape commence sur un début de mesure et la bille rebondit sur chaque temps. ` +
       `Écoute le montage ci-dessous avant de générer. ${plan.loop_bars ? `(Le refrain est court : il tourne en boucle de ${plan.loop_bars} mesures pendant la montée.)` : ""}`;
   } catch (e) { if (seq === previewSeq) { $("plan-hint").classList.add("err"); $("plan-hint").textContent = "⚠ " + e.message; } }
 }
 
 function drawTimeline() {
+  if (plan.mode === "escape") {
+    const D = plan.duration_s;
+    const segs = plan.phases.map(([t0, t1, k]) => [t0, t1, k]).concat([[plan.finale_s, D, "F"]]);
+    $("timeline").innerHTML = segs.map(([t0, t1, k]) => {
+      const pct = ((t1 - t0) / D) * 100, lab = { M: "étouffé", C: "clair", F: "FINAL" }[k];
+      const bg = { M: "#2a3246", C: "#8aa0f0", F: "#c7d3ff" }[k];
+      return `<div class="seg" style="width:${pct}%;background:${bg};color:${k === "M" ? "#e8edf6" : "#0b0f18"}"
+        title="${lab} ${fmt(t0)} → ${fmt(t1)}"><b>${pct > 6 ? lab : ""}</b>${pct > 9 ? `${fmt(t0)} · ${(t1 - t0).toFixed(1)} s` : ""}</div>`;
+    }).join("");
+    return;
+  }
   const st = plan.stage_starts_s, D = plan.duration_s;
   $("timeline").innerHTML = st.map((t0, i) => {
     const t1 = i < 5 ? st[i + 1] : D, pct = ((t1 - t0) / D) * 100;
@@ -373,6 +442,15 @@ function showResult(res) {
   $("dl").href = res.video_url + "?dl=1";
   $("dl").setAttribute("download", res.filename);
   const p = res.plan, st = p.stage_starts_s;
+  if (p.mode === "escape") {
+    $("plan-table").innerHTML =
+      `<tr><td>Tempo</td><td>${p.bpm} BPM</td></tr><tr><td>Extrait du morceau</td><td>${fmt(p.segment_start_s)} → ${fmt(p.segment_start_s + p.duration_s)}</td></tr>` +
+      `<tr><td>Anneaux</td><td>${p.rings}</td></tr>` +
+      p.phases.map(([t0, t1, k]) => `<tr><td>${k === "C" ? "Clair (dans la fente)" : "Étouffé"}</td><td>${fmt(t0)} → ${fmt(t1)}</td></tr>`).join("") +
+      `<tr><td>Compteur à 0 / final</td><td>${fmt(p.finale_s)}</td></tr><tr><td>Durée totale</td><td>${p.duration_s.toFixed(1)} s</td></tr>`;
+    $("c-result").scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
   $("plan-table").innerHTML =
     `<tr><td>Tempo</td><td>${p.bpm} BPM</td></tr><tr><td>Refrain dans le morceau</td><td>${fmt(p.hook_start_s)}</td></tr>` +
     st.map((t, i) => `<tr><td>${i} / 5 — ${STAGES[i]}</td><td>${fmt(t)}</td></tr>`).join("") +

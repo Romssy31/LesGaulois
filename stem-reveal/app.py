@@ -19,6 +19,7 @@ sys.path.insert(0, HERE)
 
 from flask import Flask, abort, jsonify, request, send_from_directory  # noqa: E402
 
+import escape_mode as ESC  # noqa: E402
 import stem_reveal as SR  # noqa: E402
 
 DATA = os.path.join(HERE, "projects")
@@ -80,7 +81,15 @@ def timing_args(p):
                 full_bars=int(fb) if fb not in (None, "", 0) else None)
 
 
-def render_job(job, sid, hook, timing, opts):
+def escape_args(p):
+    t = timing_args(p)
+    db = p.get("drop_bars")
+    return dict(min_duration=t["min_duration"], max_duration=t["max_duration"],
+                rings=int(p.get("rings") or 500), pre_bars=int(p.get("pre_bars") or 16),
+                drop_bars=int(db) if db not in (None, "", 0) else None)
+
+
+def render_job(job, sid, hook, timing, opts, mode="layers"):
     ctx = SONGS[sid]
     base = os.path.splitext(ctx["name"])[0]
     safe = "".join(ch if ch.isalnum() or ch in "-_ " else "_" for ch in base).strip() or "video"
@@ -90,6 +99,9 @@ def render_job(job, sid, hook, timing, opts):
 
     def progress(f):
         job["progress"] = 0.03 + 0.95 * f
+    if mode == "escape":
+        plan = ESC.make_escape_video(ctx, out, hook, opts, progress=progress, **timing)
+        return dict(video_url="/files/videos/" + fname, filename=fname, plan=plan)
     plan = SR.make_video(ctx, out, hook, timing["min_duration"], opts, progress=progress,
                          max_duration=timing["max_duration"], stage_bars=timing["stage_bars"],
                          full_bars=timing["full_bars"])
@@ -123,9 +135,11 @@ def job_status(jid):
 def preview():
     p = request.get_json(force=True)
     ctx = SONGS.get(p.get("song_id")) or abort(404, "song not loaded (re-import it)")
-    t = timing_args(p)
     try:
-        audio, stage_times, out_beats, plan = SR.build_audio(ctx, p.get("hook_bar"), **t)
+        if p.get("mode") == "escape":
+            audio, out_beats, plan = ESC.build_escape(ctx, p.get("hook_bar"), **escape_args(p))
+        else:
+            audio, stage_times, out_beats, plan = SR.build_audio(ctx, p.get("hook_bar"), **timing_args(p))
     except ValueError as e:
         return jsonify(error=str(e)), 400
     fname = f"preview_{p['song_id']}_{plan['hook_bar']}_{int(time.time())}.wav"
@@ -141,12 +155,16 @@ def render():
     if sid not in SONGS:
         abort(404, "song not loaded (re-import it)")
     opts = {k: p.get(k) for k in ("handle", "credit", "accent", "cta", "cta2")}
-    t = timing_args(p)
-    try:
-        SR.build_audio(SONGS[sid], p.get("hook_bar"), **t)     # validate before starting a long job
+    mode = "escape" if p.get("mode") == "escape" else "layers"
+    t = escape_args(p) if mode == "escape" else timing_args(p)
+    try:                                                    # validate before starting a long job
+        if mode == "escape":
+            ESC.build_escape(SONGS[sid], p.get("hook_bar"), **t)
+        else:
+            SR.build_audio(SONGS[sid], p.get("hook_bar"), **t)
     except ValueError as e:
         return jsonify(error=str(e)), 400
-    return jsonify(job=start_job(render_job, sid, p.get("hook_bar"), t, opts))
+    return jsonify(job=start_job(render_job, sid, p.get("hook_bar"), t, opts, mode))
 
 
 @app.get("/files/<sub>/<path:name>")

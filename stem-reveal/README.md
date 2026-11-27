@@ -12,6 +12,16 @@ Une bille part du centre, rebondit sur chaque temps et sort d'un anneau à chaqu
 | 4/5 | + DRUMS | + batterie, filtre qui monte sur les 2 dernières mesures, puis un demi-temps de silence |
 | 5/5 | FULL SONG | **le drop** : le refrain repart avec le son original complet, et un spectre circulaire réagit à la musique |
 
+## Deux types de vidéo
+
+- **Couches** (ci-dessus) : 5 anneaux, chaque sortie de la bille ajoute une couche du son.
+- **Échappée** : des centaines d'anneaux fins autour d'un petit cercle, avec un compteur au centre.
+  Tant que la bille rebondit contre la paroi, la musique est **étouffée**. Quand elle passe par la fente qui tourne,
+  les anneaux cassent un par un, le compteur descend et la musique devient **claire**.
+  Les passages dans la fente commencent et finissent sur un temps (à la fin de chaque phrase de 4 mesures,
+  de plus en plus longs), le refrain est entièrement clair et le compteur arrive à 0 pile à la fin, puis le spectre apparaît.
+  Réglages : nombre d'anneaux, mesures avant le refrain, mesures de refrain (auto), durées min et max.
+
 ## Lancer le logiciel
 
 1. Installe **Python 3.12** depuis https://www.python.org/downloads/ (sur Windows, coche « Add Python to PATH »).
@@ -54,6 +64,8 @@ python3 stem_reveal.py son.mp3 -o video.mp4 --handle @tonpseudo --credit "Titre 
 Options : `--start 61.5` (forcer le refrain, en secondes), `--stage-bars "2,4,4,4,4"` (mesures par étape),
 `--full-bars 8` (mesures de FULL SONG), `--max-duration 75`, `--stems dossier/` (tes propres pistes `vocals`/`other`/`bass`/`drums`),
 `--min-duration 62`, `--accent "#9FB4FF"`, `--cta "..."`, `--cta2 "..."`.
+
+Mode Échappée : `--mode escape --rings 500 --pre-bars 16` (et `--drop-bars 16` pour fixer la longueur du refrain).
 
 ## Droits d'auteur
 
