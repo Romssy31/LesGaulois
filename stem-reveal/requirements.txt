@@ -3,12 +3,7 @@ scipy
 soundfile
 librosa
 torch
-torchaudio
-demucs
-dora-search
-einops
-julius
-openunmix
-pyyaml
-tqdm
+demucs>=4.1
 skia-python
+flask
+imageio-ffmpeg

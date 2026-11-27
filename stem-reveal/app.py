@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+"""
+Stem Reveal — local app.  Run:  python3 app.py   (opens http://127.0.0.1:7860)
+
+Drop a song, it separates the stems, finds tempo / bars / the hook, lets you
+check or move the hook on the waveform, previews the audio edit and renders
+the video.
+"""
+import os
+import sys
+import threading
+import time
+import traceback
+import uuid
+import webbrowser
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+
+from flask import Flask, abort, jsonify, request, send_from_directory  # noqa: E402
+
+import stem_reveal as SR  # noqa: E402
+
+DATA = os.path.join(HERE, "projects")
+UPLOADS = os.path.join(DATA, "uploads")
+OUTPUT = os.path.join(DATA, "videos")
+CACHE = os.path.join(DATA, "cache")
+for d in (UPLOADS, OUTPUT, CACHE):
+    os.makedirs(d, exist_ok=True)
+
+app = Flask(__name__, static_folder=os.path.join(HERE, "static"), static_url_path="/static")
+SONGS = {}           # song_id -> analysis context (kept in memory)
+JOBS = {}            # job_id -> {state, stage, progress, message, result}
+HEAVY = threading.Lock()   # one separation / render at a time
+
+
+def start_job(fn, *a):
+    jid = uuid.uuid4().hex[:12]
+    job = JOBS[jid] = dict(state="queued", stage="", progress=0.0, message="", result=None, t0=time.time())
+
+    def run():
+        with HEAVY:
+            job["state"] = "running"
+            try:
+                job["result"] = fn(job, *a)
+                job["state"] = "done"
+                job["progress"] = 1.0
+            except Exception as e:                 # surfaced in the UI
+                traceback.print_exc()
+                job["state"] = "error"
+                job["message"] = f"{type(e).__name__}: {e}"
+    threading.Thread(target=run, daemon=True).start()
+    return jid
+
+
+# ----------------------------------------------------------------------------- jobs
+def analyse_job(job, path, name):
+    weights = dict(decode=(0.0, 0.05), separate=(0.05, 0.85), analyze=(0.85, 1.0))
+
+    def progress(stage, frac):
+        a, b = weights.get(stage, (0, 1))
+        job["stage"] = stage
+        job["progress"] = a + (b - a) * frac
+    ctx = SR.load_song(path, workdir=CACHE, progress=progress)
+    sid = uuid.uuid4().hex[:10]
+    ctx["name"] = name
+    ctx["path"] = path
+    SONGS[sid] = ctx
+    return dict(song_id=sid, name=name, audio_url="/files/uploads/" + os.path.basename(path), **SR.overview(ctx))
+
+
+def render_job(job, sid, hook, min_dur, opts):
+    ctx = SONGS[sid]
+    base = os.path.splitext(ctx["name"])[0]
+    safe = "".join(ch if ch.isalnum() or ch in "-_ " else "_" for ch in base).strip() or "video"
+    fname = f"{safe} - stem reveal {time.strftime('%H%M%S')}.mp4"
+    out = os.path.join(OUTPUT, fname)
+    job["stage"] = "render"
+
+    def progress(f):
+        job["progress"] = 0.03 + 0.95 * f
+    plan = SR.make_video(ctx, out, hook, min_dur, opts, progress=progress)
+    return dict(video_url="/files/videos/" + fname, filename=fname, plan=plan)
+
+
+# ----------------------------------------------------------------------------- routes
+@app.get("/")
+def index():
+    return send_from_directory(app.static_folder, "index.html")
+
+
+@app.post("/api/song")
+def upload():
+    f = request.files.get("file")
+    if not f or not f.filename:
+        abort(400, "no file")
+    ext = os.path.splitext(f.filename)[1].lower() or ".mp3"
+    path = os.path.join(UPLOADS, uuid.uuid4().hex[:10] + ext)
+    f.save(path)
+    return jsonify(job=start_job(analyse_job, path, f.filename))
+
+
+@app.get("/api/job/<jid>")
+def job_status(jid):
+    j = JOBS.get(jid) or abort(404)
+    return jsonify({k: v for k, v in j.items() if k != "t0"} | dict(elapsed=round(time.time() - j["t0"])))
+
+
+@app.post("/api/preview")
+def preview():
+    p = request.get_json(force=True)
+    ctx = SONGS.get(p.get("song_id")) or abort(404, "song not loaded (re-import it)")
+    audio, stage_times, out_beats, plan = SR.build_audio(ctx, p.get("hook_bar"), float(p.get("min_duration", 62)))
+    fname = f"preview_{p['song_id']}_{plan['hook_bar']}_{int(time.time())}.wav"
+    SR.write_wav(os.path.join(OUTPUT, fname), audio)
+    return jsonify(audio_url="/files/videos/" + fname, plan=plan,
+                   beats=[round(float(b), 3) for b in out_beats])
+
+
+@app.post("/api/render")
+def render():
+    p = request.get_json(force=True)
+    sid = p.get("song_id")
+    if sid not in SONGS:
+        abort(404, "song not loaded (re-import it)")
+    opts = {k: p.get(k) for k in ("handle", "credit", "accent", "cta", "cta2")}
+    return jsonify(job=start_job(render_job, sid, p.get("hook_bar"), float(p.get("min_duration", 62)), opts))
+
+
+@app.get("/files/<sub>/<path:name>")
+def files(sub, name):
+    root = {"uploads": UPLOADS, "videos": OUTPUT}.get(sub) or abort(404)
+    return send_from_directory(root, name, as_attachment=request.args.get("dl") == "1")
+
+
+def main():
+    port = int(os.environ.get("STEM_REVEAL_PORT", "7860"))
+    url = f"http://127.0.0.1:{port}"
+    print(f"\n  Stem Reveal is running: {url}\n  (close this window to stop it)\n", flush=True)
+    if os.environ.get("STEM_REVEAL_NO_BROWSER") != "1":
+        threading.Timer(1.2, lambda: webbrowser.open(url)).start()
+    app.run(host="127.0.0.1", port=port, threaded=True, debug=False)
+
+
+if __name__ == "__main__":
+    main()

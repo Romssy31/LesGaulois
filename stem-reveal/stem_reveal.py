@@ -43,7 +43,20 @@ STAGE_MIX = [
     {"vocals": 1.0, "other": 1.0, "bass": 1.0, "drums": 1.0},
 ]
 
-FONT_DIR = "/usr/share/fonts/opentype/inter"
+HERE = os.path.dirname(os.path.abspath(__file__))
+FONT_DIR = os.path.join(HERE, "fonts")
+if not os.path.exists(os.path.join(FONT_DIR, "Inter-Bold.otf")):
+    FONT_DIR = "/usr/share/fonts/opentype/inter"
+
+
+def ffmpeg_exe():
+    """System ffmpeg if installed, else the one shipped with the imageio-ffmpeg package."""
+    import shutil
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return exe
+    import imageio_ffmpeg
+    return imageio_ffmpeg.get_ffmpeg_exe()
 
 
 def log(*a):
@@ -54,7 +67,7 @@ def log(*a):
 def decode(path):
     """Any audio/video file -> float32 (n, 2) at 44.1 kHz, via ffmpeg."""
     raw = subprocess.run(
-        ["ffmpeg", "-v", "error", "-i", path, "-vn", "-f", "f32le", "-ac", "2", "-ar", str(SR), "-"],
+        [ffmpeg_exe(), "-v", "error", "-i", path, "-vn", "-f", "f32le", "-ac", "2", "-ar", str(SR), "-"],
         check=True, stdout=subprocess.PIPE).stdout
     return np.frombuffer(raw, dtype=np.float32).reshape(-1, 2).copy()
 
@@ -65,7 +78,7 @@ def write_wav(path, x):
 
 
 # ----------------------------------------------------------------------------- separation
-def separate(mix, cache_dir):
+def separate(mix, cache_dir, progress=None):
     os.makedirs(cache_dir, exist_ok=True)
     paths = {s: os.path.join(cache_dir, f"{s}.npy") for s in STEMS}
     if all(os.path.exists(p) for p in paths.values()):
@@ -82,9 +95,23 @@ def separate(mix, cache_dir):
     wav = torch.tensor(mix.T, dtype=torch.float32)
     ref = wav.mean(0)
     mean, std = ref.mean(), ref.std() + 1e-8
-    with torch.no_grad():
-        out = apply_model(model, ((wav - mean) / std)[None], device="cpu", split=True,
-                          overlap=0.25, progress=True, num_workers=0)[0]
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    import demucs.apply as dapply
+    orig_tqdm = dapply.tqdm.tqdm
+
+    def tracked(it, *a, **k):                     # report Demucs progress to the caller
+        items = list(it)
+        for n_, x in enumerate(items):
+            if progress:
+                progress(n_ / max(1, len(items)))
+            yield x
+    dapply.tqdm.tqdm = tracked
+    try:
+        with torch.no_grad():
+            out = apply_model(model, ((wav - mean) / std)[None], device=device, split=True,
+                              overlap=0.25, progress=True, num_workers=0)[0]
+    finally:
+        dapply.tqdm.tqdm = orig_tqdm
     out = out * std + mean
     stems = {}
     for i, name in enumerate(model.sources):
@@ -146,8 +173,7 @@ def analyze(mix, stems):
     return beats, bars, beat_dur
 
 
-def find_hook(mix, stems, bars, need_bars):
-    """Bar index where the strongest vocal section (chorus / drop) starts."""
+def bar_features(mix, stems, bars):
     def per_bar(x):
         m = x.mean(1)
         out = []
@@ -158,8 +184,23 @@ def find_hook(mix, stems, bars, need_bars):
 
     tot, voc = per_bar(mix), per_bar(stems["vocals"])
     low = per_bar(stems["drums"]) + per_bar(stems["bass"])
-    n = len(tot)
-    tot_n, voc_n, low_n = tot / tot.max(), voc / voc.max(), low / (low.max() + 1e-9)
+    return dict(tot=tot / tot.max(), voc=voc / voc.max(), low=low / (low.max() + 1e-9))
+
+
+def section_run(feats, j):
+    """How many bars the loud vocal section starting at bar j lasts."""
+    tot_n, voc_n = feats["tot"], feats["voc"]
+    n, run = len(tot_n), 0
+    ref = tot_n[j: j + 4].mean()
+    while j + run < n and tot_n[j + run] > 0.55 * ref and voc_n[j + run] > 0.06:
+        run += 1
+    return run
+
+
+def find_hook(feats, need_bars):
+    """Bar index where the strongest vocal section (chorus / drop) starts."""
+    tot_n, voc_n, low_n = feats["tot"], feats["voc"], feats["low"]
+    n = len(tot_n)
     best, best_j = -1e9, None
     for j in range(4, n - 8):
         if j + need_bars > n:
@@ -176,12 +217,7 @@ def find_hook(mix, stems, bars, need_bars):
             best, best_j = score, j
     if best_j is None:
         best_j = max(0, min(n - need_bars, n // 3))
-    # how long the loud vocal section lasts -> loop length for the build-up
-    run = 0
-    ref = tot_n[best_j: best_j + 4].mean()
-    while best_j + run < n and tot_n[best_j + run] > 0.55 * ref and voc_n[best_j + run] > 0.06:
-        run += 1
-    return best_j, run
+    return best_j
 
 
 # ----------------------------------------------------------------------------- arrangement
@@ -728,31 +764,103 @@ def render_frame(i):
     return surface.makeImageSnapshot().toarray().tobytes()
 
 
-def render_video(audio, stage_times, out_beats, args, plan, out_path, workdir):
+def render_video(audio, stage_times, out_beats, opts, out_path, workdir, progress=None):
     duration = len(audio) / SR
     n_frames = int(duration * FPS)
     pulse, level, spec = audio_features(audio, n_frames, stage_times[5])
     wav = os.path.join(workdir, "mix.wav")
     write_wav(wav, audio)
-    accent = tuple(int(args.accent.lstrip("#")[k:k + 2], 16) for k in (0, 2, 4))
+    o = dict(DEFAULT_OPTS, **{k: v for k, v in (opts or {}).items() if v is not None})
+    accent = tuple(int(o["accent"].lstrip("#")[k:k + 2], 16) for k in (0, 2, 4))
     state = dict(stage_times=stage_times, duration=duration, pulse=pulse, level=level, spec=spec,
-                 accent=accent, handle=args.handle, credit=args.credit,
-                 cta=(args.cta, args.cta2), ball=plan_ball(stage_times, out_beats))
+                 accent=accent, handle=o["handle"], credit=o["credit"],
+                 cta=(o["cta"], o["cta2"]), ball=plan_ball(stage_times, out_beats))
     ff = subprocess.Popen(
-        ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgra", "-s", f"{W}x{H}",
+        [ffmpeg_exe(), "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgra", "-s", f"{W}x{H}",
          "-r", str(FPS), "-i", "-", "-i", wav, "-c:v", "libx264", "-preset", "medium", "-crf", "18",
          "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "256k", "-shortest", "-movflags", "+faststart",
          out_path], stdin=subprocess.PIPE)
     t0 = time.time()
-    ctx = mp.get_context("fork")
+    ctx = mp.get_context("spawn")
     with ctx.Pool(max(1, (os.cpu_count() or 2) - 1), initializer=init_render, initargs=(state,)) as pool:
         for k, buf in enumerate(pool.imap(render_frame, range(n_frames), chunksize=6)):
             ff.stdin.write(buf)
+            if progress and k % 10 == 0:
+                progress(k / n_frames)
             if k % 150 == 0:
                 log(f"render {k}/{n_frames} frames ({time.time() - t0:.0f}s)")
     ff.stdin.close()
     ff.wait()
     log(f"video written: {out_path} ({duration:.1f}s, {time.time() - t0:.0f}s render)")
+
+
+# ----------------------------------------------------------------------------- high level API
+DEFAULT_OPTS = dict(handle="@yourhandle", credit="", accent="#9FB4FF",
+                    cta="FOLLOW FOR THE NEXT DROP", cta2="new songs every day")
+
+
+def load_song(song=None, stems_dir=None, workdir=".stem_reveal_cache", progress=None):
+    """Decode + separate + analyse. Returns a context used by the other steps."""
+    say = progress or (lambda stage, frac: None)
+    say("decode", 0)
+    if stems_dir:
+        stems = load_stem_dir(stems_dir)
+        mix = sum(stems.values())
+        key = hashlib.md5(os.path.abspath(stems_dir).encode()).hexdigest()[:10]
+    else:
+        mix = decode(song)
+        with open(song, "rb") as f:
+            key = hashlib.md5(f.read(1 << 20) + str(len(mix)).encode()).hexdigest()[:10]
+    work = os.path.join(workdir, key)
+    os.makedirs(work, exist_ok=True)
+    if not stems_dir:
+        stems = separate(mix, work, progress=lambda f: say("separate", f))
+        n = min(len(mix), *(len(v) for v in stems.values()))
+        mix, stems = mix[:n], {k: v[:n] for k, v in stems.items()}
+    say("analyze", 0)
+    beats, bars, _ = analyze(mix, stems)
+    feats = bar_features(mix, stems, bars)
+    hook = find_hook(feats, sum(STAGE_BARS) // 2)
+    log(f"hook starts at {bars[hook]:.2f}s (bar {hook})")
+    return dict(mix=mix, stems=stems, beats=beats, bars=bars, feats=feats, auto_hook=hook, work=work, key=key)
+
+
+def hook_bar_at(ctx, seconds):
+    """Nearest bar start to a time in the song (manual choice snaps to the bar grid)."""
+    return int(np.argmin(np.abs(ctx["bars"] - seconds)))
+
+
+def build_audio(ctx, hook=None, min_duration=62.0):
+    hook = ctx["auto_hook"] if hook is None else int(hook)
+    hook = int(np.clip(hook, 0, len(ctx["bars"]) - 2))
+    run = max(8, section_run(ctx["feats"], hook))
+    audio, stage_times, out_beats, out_down, plan = arrange(
+        ctx["mix"], ctx["stems"], ctx["beats"], ctx["bars"], hook, run, min_duration)
+    plan["hook_bar"] = hook
+    return audio, stage_times, out_beats, plan
+
+
+def overview(ctx, points=1200):
+    """Small summary of the song for the UI: envelope, bars, auto hook."""
+    mix = ctx["mix"].mean(1)
+    hop = max(1, len(mix) // points)
+    env = np.sqrt((mix[: hop * points].reshape(points, hop) ** 2).mean(1))
+    voc = ctx["stems"]["vocals"].mean(1)
+    venv = np.sqrt((voc[: hop * points].reshape(points, hop) ** 2).mean(1))
+    m = max(env.max(), 1e-9)
+    return dict(duration=len(mix) / SR, bpm=round(60 / float(np.median(np.diff(ctx["beats"]))), 1),
+                bars=[round(float(b), 3) for b in ctx["bars"]],
+                env=[round(float(v / m), 3) for v in env], venv=[round(float(v / m), 3) for v in venv],
+                auto_hook=int(ctx["auto_hook"]))
+
+
+def make_video(ctx, out_path, hook=None, min_duration=62.0, opts=None, progress=None):
+    audio, stage_times, out_beats, plan = build_audio(ctx, hook, min_duration)
+    plan["out"] = out_path
+    with open(os.path.splitext(out_path)[0] + ".plan.json", "w") as f:
+        json.dump(plan, f, indent=2)
+    render_video(audio, stage_times, out_beats, opts, out_path, ctx["work"], progress=progress)
+    return plan
 
 
 # ----------------------------------------------------------------------------- main
@@ -773,35 +881,11 @@ def main():
     if not args.song and not args.stems:
         ap.error("give a song file or --stems")
 
-    if args.stems:
-        stems = load_stem_dir(args.stems)
-        mix = sum(stems.values())
-        key = hashlib.md5(os.path.abspath(args.stems).encode()).hexdigest()[:10]
-    else:
-        mix = decode(args.song)
-        key = hashlib.md5(open(args.song, "rb").read(1 << 20) + str(len(mix)).encode()).hexdigest()[:10]
-    work = os.path.join(args.workdir, key)
-    os.makedirs(work, exist_ok=True)
-    if not args.stems:
-        stems = separate(mix, work)
-        n = min(len(mix), *(len(v) for v in stems.values()))
-        mix, stems = mix[:n], {k: v[:n] for k, v in stems.items()}
-
-    beats, bars, _ = analyze(mix, stems)
-    need = sum(STAGE_BARS) // 2
-    if args.start is not None:
-        hook = int(np.argmin(np.abs(bars - args.start)))
-        run = 8
-    else:
-        hook, run = find_hook(mix, stems, bars, need)
-    log(f"hook starts at {bars[hook]:.2f}s (bar {hook}), loud vocal section ≈ {run} bars")
-
-    audio, stage_times, out_beats, out_down, plan = arrange(mix, stems, beats, bars, hook, run, args.min_duration)
-    plan["out"] = args.out
+    ctx = load_song(args.song, args.stems, args.workdir)
+    hook = hook_bar_at(ctx, args.start) if args.start is not None else None
+    opts = dict(handle=args.handle, credit=args.credit, accent=args.accent, cta=args.cta, cta2=args.cta2)
+    plan = make_video(ctx, args.out, hook, args.min_duration, opts)
     log("plan:", json.dumps(plan))
-    with open(os.path.splitext(args.out)[0] + ".plan.json", "w") as f:
-        json.dump(plan, f, indent=2)
-    render_video(audio, stage_times, out_beats, args, plan, args.out, work)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 # Stem Reveal : un son construit couche par couche, en vidéo
 
-Le script génère une vidéo verticale 1080×1920 à 30 i/s, d'au moins 62 s, avec les textes en anglais :
+Un logiciel qui transforme n'importe quel son en vidéo TikTok verticale (1080×1920, au moins 62 s, textes en anglais).
+Une bille part du centre, rebondit sur chaque temps et sort d'un anneau à chaque nouvelle couche :
 
 | Étape | Titre | Ce qu'on entend |
 |---|---|---|
@@ -11,41 +12,48 @@ Le script génère une vidéo verticale 1080×1920 à 30 i/s, d'au moins 62 s, a
 | 4/5 | + DRUMS | + batterie, filtre qui monte sur les 2 dernières mesures, puis un demi-temps de silence |
 | 5/5 | FULL SONG | **le drop** : le refrain repart avec le son original complet, et un spectre circulaire réagit à la musique |
 
-**Tout est calé sur la musique :**
-- le tempo, les temps et les débuts de mesure sont détectés automatiquement ;
-- chaque changement tombe exactement sur un début de mesure ;
-- une bille part du centre et rebondit dans les anneaux, avec un rebond sur chaque temps ;
-- chaque anneau a une fente qui tourne : sa vitesse est calculée pour que la bille passe dans la fente pile au début de mesure où la couche suivante entre (et jamais avant) ;
-- quand la bille sort d'un anneau, il éclate et disparaît, et la bille rebondit librement dans le suivant ;
-- la lueur, les bulles et le cercle central pulsent sur la grosse caisse ;
-- le refrain (ou le drop) est trouvé automatiquement : c'est la partie la plus forte avec de la voix.
+## Lancer le logiciel
 
-## Utilisation
+1. Installe **Python 3.12** depuis https://www.python.org/downloads/ (sur Windows, coche « Add Python to PATH »).
+2. Double-clique sur :
+   - **Windows** : `Lancer Stem Reveal (Windows).bat`
+   - **Mac** : `Lancer Stem Reveal (Mac).command` (la première fois : clic droit → Ouvrir)
+3. Le premier lancement installe tout (5 à 10 minutes, une seule fois). Ensuite le logiciel s'ouvre dans ton navigateur.
+
+## Comment ça marche
+
+1. **Importer** : glisse ton son (MP3, WAV, M4A, FLAC, ou même une vidéo).
+   Le logiciel sépare les pistes (voix, mélodie, basse, batterie) avec l'IA Demucs, puis détecte le tempo, chaque temps, chaque début de mesure et le refrain.
+2. **Timing** : la forme d'onde affiche les mesures, la voix et le refrain choisi.
+   - Clique ailleurs sur la forme d'onde, ou utilise ◀ / ▶, pour changer le refrain. Il se cale toujours sur une mesure.
+   - La frise montre l'heure exacte de chaque étape, et tu peux **écouter le montage audio** avant de lancer le rendu.
+3. **Générer** : choisis ton pseudo, le titre, la couleur et les textes, puis clique sur « Générer la vidéo ». Tu la télécharges à la fin.
+
+Les vidéos sont enregistrées dans `projects/videos/`.
+
+**Tout est calé sur la musique :**
+- chaque changement d'étape tombe exactement sur un début de mesure ;
+- la bille rebondit sur chaque temps ;
+- chaque anneau a une fente qui tourne. Sa vitesse est calculée pour que la bille passe dans la fente pile au début de mesure où la couche suivante entre, et jamais avant ;
+- quand la bille sort d'un anneau, il éclate et disparaît, et la bille rebondit librement dans le suivant ;
+- la lueur, les bulles et le cercle central pulsent sur la grosse caisse.
+
+## Temps de calcul
+
+Sur un ordinateur portable récent : environ 1 min pour séparer un son de 3 min (beaucoup moins avec une carte graphique NVIDIA),
+puis environ 2 min de rendu. Un son déjà importé une fois est mis en cache : il se recharge instantanément.
+
+## En ligne de commande (optionnel)
 
 ```bash
 python3 stem_reveal.py son.mp3 -o video.mp4 --handle @tonpseudo --credit "Titre — Artiste"
 ```
-
-Options utiles :
-- `--start 61.5` : forcer le début du refrain (en secondes) si le choix automatique ne convient pas
-- `--stems dossier/` : utiliser tes propres pistes (`vocals`, `other`, `bass`, `drums` en .wav ou .mp3) au lieu de la séparation automatique
-- `--min-duration 62` : durée minimale (TikTok : plus de 60 s)
-- `--accent "#9FB4FF"` : couleur d'accent (comète, lueur, appel à l'abonnement)
-- `--cta "FOLLOW FOR THE NEXT DROP" --cta2 "new songs every day"` : textes de fin
-
-Le script écrit aussi `video.plan.json`, avec le BPM, la position du refrain et l'heure de début de chaque étape.
-
-## Installation
-
-```bash
-pip install -r requirements.txt     # torch, demucs, librosa, skia-python…
-# ffmpeg doit être installé ; la police Inter est attendue dans /usr/share/fonts/opentype/inter
-```
-
-Le premier lancement télécharge le modèle Demucs `htdemucs` (environ 80 Mo, depuis dl.fbaipublicfiles.com).
-Sur un processeur 4 cœurs, la séparation prend environ 1 min pour un son de 3 min, et le rendu environ 2 min.
+Options : `--start 61.5` (forcer le refrain, en secondes), `--stems dossier/` (tes propres pistes `vocals`/`other`/`bass`/`drums`),
+`--min-duration 62`, `--accent "#9FB4FF"`, `--cta "..."`, `--cta2 "..."`.
 
 ## Droits d'auteur
 
 Si tu utilises un son du commerce, TikTok peut couper le son de la vidéo ou la bloquer. Le plus sûr :
 un son de la bibliothèque TikTok, de la musique libre de droits, ou tes propres productions.
+
+La police Inter (dossier `fonts/`) est sous licence SIL Open Font License 1.1 (voir `fonts/OFL.txt`).
