@@ -69,7 +69,18 @@ def analyse_job(job, path, name):
     return dict(song_id=sid, name=name, audio_url="/files/uploads/" + os.path.basename(path), **SR.overview(ctx))
 
 
-def render_job(job, sid, hook, min_dur, opts):
+def timing_args(p):
+    """Duration settings sent by the UI."""
+    sb = p.get("stage_bars")
+    mx = p.get("max_duration")
+    fb = p.get("full_bars")
+    return dict(min_duration=float(p.get("min_duration") or 62),
+                max_duration=float(mx) if mx not in (None, "", 0) else None,
+                stage_bars=[int(x) for x in sb] if sb else None,
+                full_bars=int(fb) if fb not in (None, "", 0) else None)
+
+
+def render_job(job, sid, hook, timing, opts):
     ctx = SONGS[sid]
     base = os.path.splitext(ctx["name"])[0]
     safe = "".join(ch if ch.isalnum() or ch in "-_ " else "_" for ch in base).strip() or "video"
@@ -79,7 +90,9 @@ def render_job(job, sid, hook, min_dur, opts):
 
     def progress(f):
         job["progress"] = 0.03 + 0.95 * f
-    plan = SR.make_video(ctx, out, hook, min_dur, opts, progress=progress)
+    plan = SR.make_video(ctx, out, hook, timing["min_duration"], opts, progress=progress,
+                         max_duration=timing["max_duration"], stage_bars=timing["stage_bars"],
+                         full_bars=timing["full_bars"])
     return dict(video_url="/files/videos/" + fname, filename=fname, plan=plan)
 
 
@@ -110,7 +123,11 @@ def job_status(jid):
 def preview():
     p = request.get_json(force=True)
     ctx = SONGS.get(p.get("song_id")) or abort(404, "song not loaded (re-import it)")
-    audio, stage_times, out_beats, plan = SR.build_audio(ctx, p.get("hook_bar"), float(p.get("min_duration", 62)))
+    t = timing_args(p)
+    try:
+        audio, stage_times, out_beats, plan = SR.build_audio(ctx, p.get("hook_bar"), **t)
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
     fname = f"preview_{p['song_id']}_{plan['hook_bar']}_{int(time.time())}.wav"
     SR.write_wav(os.path.join(OUTPUT, fname), audio)
     return jsonify(audio_url="/files/videos/" + fname, plan=plan,
@@ -124,7 +141,12 @@ def render():
     if sid not in SONGS:
         abort(404, "song not loaded (re-import it)")
     opts = {k: p.get(k) for k in ("handle", "credit", "accent", "cta", "cta2")}
-    return jsonify(job=start_job(render_job, sid, p.get("hook_bar"), float(p.get("min_duration", 62)), opts))
+    t = timing_args(p)
+    try:
+        SR.build_audio(SONGS[sid], p.get("hook_bar"), **t)     # validate before starting a long job
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    return jsonify(job=start_job(render_job, sid, p.get("hook_bar"), t, opts))
 
 
 @app.get("/files/<sub>/<path:name>")

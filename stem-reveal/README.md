@@ -27,6 +27,9 @@ Une bille part du centre, rebondit sur chaque temps et sort d'un anneau à chaqu
 2. **Timing** : la forme d'onde affiche les mesures, la voix et le refrain choisi.
    - Clique ailleurs sur la forme d'onde, ou utilise ◀ / ▶, pour changer le refrain. Il se cale toujours sur une mesure.
    - La frise montre l'heure exacte de chaque étape, et tu peux **écouter le montage audio** avant de lancer le rendu.
+   - **Durées** : choisis un préréglage (Courte ≈ 30 s, Standard ≈ 1 min, Longue ≈ 1 min 30), ou règle toi-même la longueur
+     de chaque étape **en mesures** (le logiciel affiche l'équivalent en secondes). Tu peux aussi fixer une durée minimale et
+     une durée maximale : la partie FULL SONG s'allonge ou se raccourcit, mesure par mesure, pour les respecter.
 3. **Générer** : choisis ton pseudo, le titre, la couleur et les textes, puis clique sur « Générer la vidéo ». Tu la télécharges à la fin.
 
 Les vidéos sont enregistrées dans `projects/videos/`.
@@ -48,7 +51,8 @@ puis environ 2 min de rendu. Un son déjà importé une fois est mis en cache : 
 ```bash
 python3 stem_reveal.py son.mp3 -o video.mp4 --handle @tonpseudo --credit "Titre — Artiste"
 ```
-Options : `--start 61.5` (forcer le refrain, en secondes), `--stems dossier/` (tes propres pistes `vocals`/`other`/`bass`/`drums`),
+Options : `--start 61.5` (forcer le refrain, en secondes), `--stage-bars "2,4,4,4,4"` (mesures par étape),
+`--full-bars 8` (mesures de FULL SONG), `--max-duration 75`, `--stems dossier/` (tes propres pistes `vocals`/`other`/`bass`/`drums`),
 `--min-duration 62`, `--accent "#9FB4FF"`, `--cta "..."`, `--cta2 "..."`.
 
 ## Droits d'auteur

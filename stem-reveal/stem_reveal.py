@@ -241,11 +241,19 @@ def hp_sweep(x, f0, f1):
     return out
 
 
-def arrange(mix, stems, beats, bars, hook, run, min_duration):
+def arrange(mix, stems, beats, bars, hook, run, min_duration, max_duration=None, stage_bars=None, full_bars=None):
+    """stage_bars: bars for each of the 5 build stages (None = automatic).
+    full_bars: bars of the FULL SONG part (None = enough to reach min_duration).
+    max_duration: the FULL SONG part is shortened (bar by bar) to stay under it."""
     bar_dur = float(np.median(np.diff(bars)))
-    stage_bars = list(STAGE_BARS)
-    if bar_dur < 1.6:                                  # very fast song: longer stages
-        stage_bars = [b * 2 for b in stage_bars]
+    if stage_bars:
+        stage_bars = [max(1, int(b)) for b in stage_bars][:5]
+        if len(stage_bars) != 5:
+            raise ValueError("il faut 5 durées d'étapes (en mesures)")
+    else:
+        stage_bars = list(STAGE_BARS)
+        if bar_dur < 1.6:                              # very fast song: longer stages
+            stage_bars = [b * 2 for b in stage_bars]
     pre_bars = sum(stage_bars)
     loop = None if run >= pre_bars else (16 if run >= 16 else 8)
 
@@ -263,13 +271,27 @@ def arrange(mix, stems, beats, bars, hook, run, min_duration):
             segments.append((*bar_span(src), s))
             b += 1
     t_pre = sum(e - a for a, e, _ in segments)
-    # full song: restart on the hook, enough bars to pass min_duration
-    full = 0
-    while True:
-        full += 4
-        dur = sum(bar_span(hook + k)[1] - bar_span(hook + k)[0] for k in range(full))
-        if t_pre + dur >= min_duration or hook + full >= len(bars) - 1:
-            break
+
+    def full_dur(n):
+        return sum(bar_span(hook + k)[1] - bar_span(hook + k)[0] for k in range(n))
+
+    # full song: restarts on the hook
+    avail = max(1, len(bars) - 1 - hook)               # bars of real music after the hook
+    if full_bars:
+        full = int(full_bars)
+    else:                                              # enough bars (by 4) to pass min_duration
+        full = 0
+        while True:
+            full += 4
+            if t_pre + full_dur(full) >= min_duration or full >= avail:
+                break
+    full = max(1, min(full, avail))
+    if max_duration:
+        if t_pre + full_dur(1) > max_duration + 1e-6:
+            raise ValueError(f"les 5 étapes de montée durent déjà {t_pre:.1f} s : c'est plus que la durée max "
+                             f"({max_duration:.0f} s). Raccourcis des étapes ou augmente la durée max.")
+        while full > 1 and t_pre + full_dur(full) > max_duration + 1e-6:
+            full -= 1
     for k in range(full):
         segments.append((*bar_span(hook + k), 5))
     total = t_pre + sum(bar_span(hook + k)[1] - bar_span(hook + k)[0] for k in range(full))
@@ -330,7 +352,7 @@ def arrange(mix, stems, beats, bars, hook, run, min_duration):
 
     # pre-drop: rising high-pass over the last 2 bars of "+ DRUMS", short gap before the drop
     d0, d1 = int(stage_times[4] * SR), int(stage_times[5] * SR)
-    sweep_start = d0 + int((d1 - d0) * (1 - 2 / stage_bars[4]))
+    sweep_start = d0 + int((d1 - d0) * (1 - min(2, stage_bars[4]) / stage_bars[4]))
     out[sweep_start:d1] = hp_sweep(out[sweep_start:d1], 40, 900)
     gap = int(0.5 * float(np.median(np.diff(beats))) * SR)
     fade = int(0.02 * SR)
@@ -359,7 +381,7 @@ def arrange(mix, stems, beats, bars, hook, run, min_duration):
     plan = dict(
         bpm=round(60 / float(np.median(np.diff(beats))), 1),
         hook_start_s=round(float(bars[hook]), 2),
-        loop_bars=loop, stage_bars=stage_bars, full_bars=full,
+        loop_bars=loop, stage_bars=stage_bars, full_bars=full, bar_s=round(bar_dur, 3),
         stage_starts_s=[round(t, 3) for t in stage_times],
         duration_s=round(len(out) / SR, 2),
         stage_gain_db=[round(20 * math.log10(stage_gain[s]), 1) for s in range(6)],
@@ -859,12 +881,13 @@ def hook_bar_at(ctx, seconds):
     return int(np.argmin(np.abs(ctx["bars"] - seconds)))
 
 
-def build_audio(ctx, hook=None, min_duration=62.0):
+def build_audio(ctx, hook=None, min_duration=62.0, max_duration=None, stage_bars=None, full_bars=None):
     hook = ctx["auto_hook"] if hook is None else int(hook)
     hook = int(np.clip(hook, 0, len(ctx["bars"]) - 2))
     run = max(8, section_run(ctx["feats"], hook))
     audio, stage_times, out_beats, out_down, plan = arrange(
-        ctx["mix"], ctx["stems"], ctx["beats"], ctx["bars"], hook, run, min_duration)
+        ctx["mix"], ctx["stems"], ctx["beats"], ctx["bars"], hook, run, min_duration,
+        max_duration, stage_bars, full_bars)
     plan["hook_bar"] = hook
     return audio, stage_times, out_beats, plan
 
@@ -883,8 +906,9 @@ def overview(ctx, points=1200):
                 auto_hook=int(ctx["auto_hook"]))
 
 
-def make_video(ctx, out_path, hook=None, min_duration=62.0, opts=None, progress=None):
-    audio, stage_times, out_beats, plan = build_audio(ctx, hook, min_duration)
+def make_video(ctx, out_path, hook=None, min_duration=62.0, opts=None, progress=None,
+               max_duration=None, stage_bars=None, full_bars=None):
+    audio, stage_times, out_beats, plan = build_audio(ctx, hook, min_duration, max_duration, stage_bars, full_bars)
     plan["out"] = out_path
     with open(os.path.splitext(out_path)[0] + ".plan.json", "w") as f:
         json.dump(plan, f, indent=2)
@@ -900,6 +924,9 @@ def main():
     ap.add_argument("-o", "--out", default="stem_reveal.mp4")
     ap.add_argument("--start", type=float, help="force the hook start time in seconds")
     ap.add_argument("--min-duration", type=float, default=62.0, help="minimum video length (s)")
+    ap.add_argument("--max-duration", type=float, help="maximum video length (s)")
+    ap.add_argument("--stage-bars", help='bars per build stage, e.g. "2,4,4,4,4" (muffled,vocals,melody,bass,drums)')
+    ap.add_argument("--full-bars", type=int, help="bars of the FULL SONG part (default: auto)")
     ap.add_argument("--handle", default="@yourhandle")
     ap.add_argument("--credit", default="", help='e.g. "Song Title — Artist" (shown on FULL SONG)')
     ap.add_argument("--accent", default="#9FB4FF")
@@ -913,7 +940,9 @@ def main():
     ctx = load_song(args.song, args.stems, args.workdir)
     hook = hook_bar_at(ctx, args.start) if args.start is not None else None
     opts = dict(handle=args.handle, credit=args.credit, accent=args.accent, cta=args.cta, cta2=args.cta2)
-    plan = make_video(ctx, args.out, hook, args.min_duration, opts)
+    sb = [int(x) for x in args.stage_bars.split(",")] if args.stage_bars else None
+    plan = make_video(ctx, args.out, hook, args.min_duration, opts,
+                      max_duration=args.max_duration, stage_bars=sb, full_bars=args.full_bars)
     log("plan:", json.dumps(plan))
 
 

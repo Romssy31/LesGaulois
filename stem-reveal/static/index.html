@@ -57,6 +57,15 @@
   video { width: 100%; border-radius: 12px; background: #000; }
   a.dl { display: inline-block; margin-top: 10px; color: #0b0f18; background: var(--ok); padding: 10px 16px;
          border-radius: 9px; font-weight: 700; text-decoration: none; }
+  .durs { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+  .durs h3 { margin: 0 0 10px; font-size: 14px; }
+  .dgrid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; }
+  @media (max-width: 760px) { .dgrid { grid-template-columns: repeat(3, 1fr); } }
+  .dgrid label b { display: block; color: var(--text); font-size: 12px; margin-bottom: 2px; white-space: nowrap; }
+  .dgrid small { display: block; color: var(--accent2); font-size: 12px; margin-top: 3px; }
+  .presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .presets button.on { border-color: var(--accent); color: var(--accent2); }
+  .err { color: var(--err) !important; }
   table { border-collapse: collapse; font-size: 13px; width: 100%; }
   td { padding: 4px 6px; border-bottom: 1px solid var(--line); }
   td:last-child { text-align: right; color: var(--accent2); font-variant-numeric: tabular-nums; }
@@ -95,6 +104,20 @@
     <audio id="orig" controls preload="auto"></audio>
     <div class="timeline" id="timeline"></div>
     <div class="row"><span class="hint" id="plan-hint"></span></div>
+    <div class="durs">
+      <h3>Durées</h3>
+      <div class="presets">
+        <button data-p="court">Courte (≈ 30 s)</button>
+        <button data-p="standard">Standard (≈ 1 min)</button>
+        <button data-p="long">Longue (≈ 1 min 30)</button>
+      </div>
+      <div class="dgrid" id="dgrid"></div>
+      <div class="grid" style="margin-top:12px">
+        <label>Durée minimale de la vidéo (s)<input type="number" id="o-min" value="62" min="5" max="600" step="1"></label>
+        <label>Durée maximale de la vidéo (s) — vide = pas de limite<input type="number" id="o-max" value="" min="5" max="600" step="1" placeholder="aucune"></label>
+      </div>
+      <div class="row"><span class="hint">Les durées sont en <b>mesures</b> pour que chaque changement tombe sur la musique. La partie FULL SONG en « auto » s'allonge jusqu'à la durée minimale, et elle est raccourcie si la durée maximale est dépassée.</span></div>
+    </div>
     <audio id="montage" controls preload="auto"></audio>
   </div>
 
@@ -107,7 +130,6 @@
       <label>Texte final<input type="text" id="o-cta" value="FOLLOW FOR THE NEXT DROP"></label>
       <label>Sous-texte final<input type="text" id="o-cta2" value="new songs every day"></label>
       <label>Couleur d'accent<input type="color" id="o-accent" value="#9fb4ff"></label>
-      <label>Durée minimale (secondes)<input type="number" id="o-min" value="62" min="30" max="180" step="1"></label>
     </div>
     <div class="row" style="margin-top:18px">
       <button class="primary" id="go">Générer la vidéo</button>
@@ -135,13 +157,52 @@ const STAGES = ["MUFFLED VOCALS", "VOCALS", "+ MELODY", "+ BASS", "+ DRUMS", "FU
 const STAGE_COL = ["#3a4560", "#4a5a86", "#5b6fb0", "#6f86d6", "#8aa0f0", "#c7d3ff"];
 const STAGE_LABEL = { decode: "Lecture du fichier…", separate: "Séparation des pistes (voix, mélodie, basse, batterie)…",
                       analyze: "Détection du tempo, des mesures et du refrain…", render: "Rendu de la vidéo…" };
-let song = null, hook = null, plan = null, previewTimer = null, previewSeq = 0;
+let song = null, hook = null, plan = null, previewTimer = null, previewSeq = 0, customStages = false;
+const PRESETS = {
+  court: { stages: [1, 2, 2, 2, 2], full: "", min: 25, max: 35 },
+  standard: { stages: [2, 4, 4, 4, 4], full: "", min: 62, max: 75 },
+  long: { stages: [2, 8, 8, 8, 8], full: "", min: 90, max: 120 },
+};
+const barSec = () => (song ? 240 / song.bpm : 2);
+
+function buildDurInputs() {
+  $("dgrid").innerHTML = STAGES.map((n, i) =>
+    `<label><b>${i} / 5 · ${n}</b><input type="number" id="sb${i}" min="1" max="64" step="1" ${i === 5 ? 'placeholder="auto"' : 'value="4"'}>
+     <small id="ss${i}"></small></label>`).join("");
+  for (let i = 0; i < 6; i++) $(`sb${i}`).addEventListener("input", () => { if (i < 5) customStages = true; markPreset(null); durChanged(); });
+}
+function updateSecs() {
+  for (let i = 0; i < 6; i++) {
+    const v = +$(`sb${i}`).value;
+    let txt = v ? `${v} mes. ≈ ${(v * barSec()).toFixed(1)} s` : "";
+    if (i === 5 && !v && plan) txt = `auto : ${plan.full_bars} mes. ≈ ${(plan.duration_s - plan.stage_starts_s[5]).toFixed(1)} s`;
+    $(`ss${i}`).textContent = txt;
+  }
+}
+function timing() {
+  const t = { min_duration: +$("o-min").value || 62, max_duration: +$("o-max").value || null,
+              full_bars: +$("sb5").value || null };
+  if (customStages) t.stage_bars = [0, 1, 2, 3, 4].map((i) => Math.max(1, +$(`sb${i}`).value || 1));
+  return t;
+}
+function markPreset(name) { document.querySelectorAll(".presets button").forEach((b) => b.classList.toggle("on", b.dataset.p === name)); }
+function durChanged() { updateSecs(); if (song) schedulePreview(400); }
+document.querySelectorAll(".presets button").forEach((b) => b.onclick = () => {
+  const p = PRESETS[b.dataset.p];
+  p.stages.forEach((v, i) => $(`sb${i}`).value = v);
+  $("sb5").value = p.full; $("o-min").value = p.min; $("o-max").value = p.max;
+  customStages = true; markPreset(b.dataset.p); durChanged();
+});
 
 const fmt = (s) => { s = Math.max(0, s); const m = Math.floor(s / 60); return `${m}:${(s - m * 60).toFixed(1).padStart(4, "0")}`; };
 
 async function api(path, body) {
   const r = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
-  if (!r.ok) throw new Error((await r.text()).replace(/<[^>]+>/g, " ").trim().slice(0, 200));
+  if (!r.ok) {
+    const t = await r.text(); let m = t;
+    try { m = JSON.parse(t).error || t; } catch (e) { m = t.replace(/<[^>]+>/g, " ").trim(); }
+    throw new Error(m.slice(0, 300));
+  }
   return r.json();
 }
 
@@ -189,6 +250,7 @@ function loadSong(res) {
   $("orig").src = res.audio_url;
   ["c-timing", "c-render"].forEach((id) => $(id).classList.remove("hidden"));
   $("c-result").classList.add("hidden");
+  buildDurInputs(); customStages = false; markPreset(null);
   drawWave(); schedulePreview(0);
   $("c-timing").scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -262,13 +324,16 @@ function schedulePreview(delay) {
 async function runPreview() {
   const seq = ++previewSeq;
   try {
-    const r = await api("/api/preview", { song_id: song.song_id, hook_bar: hook, min_duration: +$("o-min").value || 62 });
+    const r = await api("/api/preview", { song_id: song.song_id, hook_bar: hook, ...timing() });
     if (seq !== previewSeq) return;
     plan = r.plan; $("montage").src = r.audio_url;
+    $("plan-hint").classList.remove("err");
+    if (!customStages) plan.stage_bars.forEach((v, i) => $(`sb${i}`).value = v);
+    updateSecs();
     drawTimeline(); drawWave();
     $("plan-hint").textContent = `Chaque étape commence sur un début de mesure et la bille rebondit sur chaque temps. ` +
       `Écoute le montage ci-dessous avant de générer. ${plan.loop_bars ? `(Le refrain est court : il tourne en boucle de ${plan.loop_bars} mesures pendant la montée.)` : ""}`;
-  } catch (e) { $("plan-hint").textContent = "Erreur : " + e.message; }
+  } catch (e) { if (seq === previewSeq) { $("plan-hint").classList.add("err"); $("plan-hint").textContent = "⚠ " + e.message; } }
 }
 
 function drawTimeline() {
@@ -279,7 +344,7 @@ function drawTimeline() {
       title="${STAGES[i]} ${fmt(t0)} → ${fmt(t1)}"><b>${STAGES[i]}</b>${fmt(t0)} · ${(t1 - t0).toFixed(1)} s</div>`;
   }).join("");
 }
-$("o-min").addEventListener("change", () => song && schedulePreview(200));
+["o-min", "o-max"].forEach((id) => $(id).addEventListener("input", () => { markPreset(null); durChanged(); }));
 
 // ---------- 3. render
 $("go").onclick = async () => {
@@ -289,7 +354,7 @@ $("go").onclick = async () => {
   $("render-status").textContent = "Préparation…";
   try {
     const { job } = await api("/api/render", {
-      song_id: song.song_id, hook_bar: hook, min_duration: +$("o-min").value || 62,
+      song_id: song.song_id, hook_bar: hook, ...timing(),
       handle: $("o-handle").value, credit: $("o-credit").value, cta: $("o-cta").value,
       cta2: $("o-cta2").value, accent: $("o-accent").value,
     });
