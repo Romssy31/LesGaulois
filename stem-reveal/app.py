@@ -48,7 +48,7 @@ def start_job(fn, *a):
             except Exception as e:                 # surfaced in the UI
                 traceback.print_exc()
                 job["state"] = "error"
-                job["message"] = f"{type(e).__name__}: {e}"
+                job["message"] = f"{type(e).__name__}: {e}"[:400]
     threading.Thread(target=run, daemon=True).start()
     return jid
 

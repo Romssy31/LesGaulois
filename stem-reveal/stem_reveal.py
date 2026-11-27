@@ -764,6 +764,26 @@ def render_frame(i):
     return surface.makeImageSnapshot().toarray().tobytes()
 
 
+X264 = ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p"]
+
+
+def render_segment(job):
+    """Worker: render frames [a, b) and encode them straight to a video segment.
+    Only the segment path goes back to the parent, never raw frames (Windows
+    pipes refuse multi-MB results)."""
+    a, b, path = job
+    ff = subprocess.Popen(
+        [ffmpeg_exe(), "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgra", "-s", f"{W}x{H}",
+         "-r", str(FPS), "-i", "-", *X264, "-threads", "2", "-g", str(FPS * 2), path],
+        stdin=subprocess.PIPE)
+    for i in range(a, b):
+        ff.stdin.write(render_frame(i))
+    ff.stdin.close()
+    if ff.wait() != 0:
+        raise RuntimeError(f"ffmpeg failed on segment {path}")
+    return path
+
+
 def render_video(audio, stage_times, out_beats, opts, out_path, workdir, progress=None):
     duration = len(audio) / SR
     n_frames = int(duration * FPS)
@@ -775,22 +795,31 @@ def render_video(audio, stage_times, out_beats, opts, out_path, workdir, progres
     state = dict(stage_times=stage_times, duration=duration, pulse=pulse, level=level, spec=spec,
                  accent=accent, handle=o["handle"], credit=o["credit"],
                  cta=(o["cta"], o["cta2"]), ball=plan_ball(stage_times, out_beats))
-    ff = subprocess.Popen(
-        [ffmpeg_exe(), "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgra", "-s", f"{W}x{H}",
-         "-r", str(FPS), "-i", "-", "-i", wav, "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "256k", "-shortest", "-movflags", "+faststart",
-         out_path], stdin=subprocess.PIPE)
+    seg_dir = os.path.join(workdir, f"segments_{os.getpid()}_{int(time.time())}")
+    os.makedirs(seg_dir, exist_ok=True)
+    step = FPS * 4
+    jobs = [(a, min(n_frames, a + step), os.path.join(seg_dir, f"seg_{k:04d}.mp4"))
+            for k, a in enumerate(range(0, n_frames, step))]
     t0 = time.time()
     ctx = mp.get_context("spawn")
-    with ctx.Pool(max(1, (os.cpu_count() or 2) - 1), initializer=init_render, initargs=(state,)) as pool:
-        for k, buf in enumerate(pool.imap(render_frame, range(n_frames), chunksize=6)):
-            ff.stdin.write(buf)
-            if progress and k % 10 == 0:
-                progress(k / n_frames)
-            if k % 150 == 0:
-                log(f"render {k}/{n_frames} frames ({time.time() - t0:.0f}s)")
-    ff.stdin.close()
-    ff.wait()
+    workers = max(1, min(len(jobs), (os.cpu_count() or 2) - 1))
+    with ctx.Pool(workers, initializer=init_render, initargs=(state,)) as pool:
+        for k, _ in enumerate(pool.imap_unordered(render_segment, jobs)):
+            if progress:
+                progress(0.97 * (k + 1) / len(jobs))
+            log(f"render {k + 1}/{len(jobs)} segments ({time.time() - t0:.0f}s)")
+    # stitch the segments (no re-encode) and add the audio
+    lst = os.path.join(seg_dir, "list.txt")
+    with open(lst, "w", encoding="utf-8") as f:
+        for _, _, path in jobs:
+            f.write(f"file '{os.path.basename(path)}'\n")
+    subprocess.run([ffmpeg_exe(), "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-i", wav,
+                    "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "256k",
+                    "-shortest", "-movflags", "+faststart", out_path], check=True)
+    import shutil
+    shutil.rmtree(seg_dir, ignore_errors=True)
+    if progress:
+        progress(1.0)
     log(f"video written: {out_path} ({duration:.1f}s, {time.time() - t0:.0f}s render)")
 
 
