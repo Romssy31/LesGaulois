@@ -39,7 +39,7 @@ def wrap(a):
 
 # ----------------------------------------------------------------------------- timeline + audio
 def build_escape(ctx, hook=None, min_duration=62.0, max_duration=None, rings=500, pre_bars=16,
-                 drop_bars=None, outro_bars=2):
+                 drop_bars=None, outro_bars=2, range_bars=None):
     bars, beats, mix = ctx["bars"], ctx["beats"], ctx["mix"]
     nb = len(bars)
     hook = ctx["auto_hook"] if hook is None else int(hook)
@@ -52,6 +52,16 @@ def build_escape(ctx, hook=None, min_duration=62.0, max_duration=None, rings=500
 
     pre = int(np.clip(int(pre_bars or 16), 4, hook))
     out_b = max(1, int(outro_bars))
+    if range_bars:                                   # one continuous take of the selected part
+        A, B = max(0, int(range_bars[0])), min(nb, int(range_bars[1]))
+        if B - A < 8:
+            raise ValueError("la plage sélectionnée est trop courte : il faut au moins 8 mesures.")
+        out_b = 2 if B - A >= 16 else 1
+        if not (A + 4 <= hook <= B - out_b - 1):     # hook outside the range: put the release at ~60 %
+            hook = A + max(4, int(round(0.6 * (B - A))))
+            hook = min(hook, B - out_b - 1)
+        pre, F = hook - A, B - out_b - hook
+        drop_bars, max_duration, min_duration = F, None, 0
 
     def total(pre_, F_):
         return min(bt(hook + F_ + out_b), song_end) - bt(hook - pre_)
@@ -62,7 +72,8 @@ def build_escape(ctx, hook=None, min_duration=62.0, max_duration=None, rings=500
         F = 4
         while total(pre, F) < min_duration and hook + F + out_b < nb - 1:
             F += 4
-    F = max(1, min(F, nb - 1 - hook - out_b))
+    last_bar = int(range_bars[1]) if range_bars else nb - 1
+    F = max(1, min(F, last_bar - hook - out_b))
     if max_duration:
         while F > 2 and total(pre, F) > max_duration + 1e-6:
             F -= 1
@@ -127,7 +138,7 @@ def build_escape(ctx, hook=None, min_duration=62.0, max_duration=None, rings=500
     audio = audio * (0.92 / max(peak, 1e-6))
     audio = np.where(np.abs(audio) > 0.9, np.sign(audio) * (0.9 + 0.1 * np.tanh((np.abs(audio) - 0.9) / 0.1)), audio)
 
-    plan = dict(mode="escape", bpm=round(60 / float(np.median(np.diff(beats))), 1), hook_bar=hook,
+    plan = dict(mode="escape", range=[int(range_bars[0]), int(range_bars[1])] if range_bars else None, bpm=round(60 / float(np.median(np.diff(beats))), 1), hook_bar=hook,
                 hook_start_s=round(bt(hook), 2), segment_start_s=round(s0, 2), pre_bars=pre, drop_bars=F,
                 outro_bars=out_b, rings=int(rings), bar_s=round(bar_dur, 3),
                 phases=[[round(p[0], 3), round(p[1], 3), p[2]] for p in phases],

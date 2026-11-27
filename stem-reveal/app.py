@@ -75,7 +75,9 @@ def timing_args(p):
     sb = p.get("stage_bars")
     mx = p.get("max_duration")
     fb = p.get("full_bars")
-    return dict(min_duration=float(p.get("min_duration") or 62),
+    rg = p.get("range")
+    return dict(range_bars=[int(rg[0]), int(rg[1])] if rg else None,
+                min_duration=float(p.get("min_duration") or 62),
                 max_duration=float(mx) if mx not in (None, "", 0) else None,
                 stage_bars=[int(x) for x in sb] if sb else None,
                 full_bars=int(fb) if fb not in (None, "", 0) else None)
@@ -84,7 +86,7 @@ def timing_args(p):
 def escape_args(p):
     t = timing_args(p)
     db = p.get("drop_bars")
-    return dict(min_duration=t["min_duration"], max_duration=t["max_duration"],
+    return dict(range_bars=t["range_bars"], min_duration=t["min_duration"], max_duration=t["max_duration"],
                 rings=int(p.get("rings") or 500), pre_bars=int(p.get("pre_bars") or 16),
                 drop_bars=int(db) if db not in (None, "", 0) else None)
 
@@ -104,7 +106,7 @@ def render_job(job, sid, hook, timing, opts, mode="layers"):
         return dict(video_url="/files/videos/" + fname, filename=fname, plan=plan)
     plan = SR.make_video(ctx, out, hook, timing["min_duration"], opts, progress=progress,
                          max_duration=timing["max_duration"], stage_bars=timing["stage_bars"],
-                         full_bars=timing["full_bars"])
+                         full_bars=timing["full_bars"], range_bars=timing["range_bars"])
     return dict(video_url="/files/videos/" + fname, filename=fname, plan=plan)
 
 

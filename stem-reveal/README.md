@@ -36,6 +36,9 @@ Une bille part du centre, rebondit sur chaque temps et sort d'un anneau à chaqu
    Le logiciel sépare les pistes (voix, mélodie, basse, batterie) avec l'IA Demucs, puis détecte le tempo, chaque temps, chaque début de mesure et le refrain.
 2. **Timing** : la forme d'onde affiche les mesures, la voix et le refrain choisi.
    - Clique ailleurs sur la forme d'onde, ou utilise ◀ / ▶, pour changer le refrain. Il se cale toujours sur une mesure.
+   - **Glisse** sur la forme d'onde pour choisir la partie du son à utiliser, ou clique sur **Tout le morceau**.
+     Cette partie est jouée d'un seul tenant, sans boucle ni retour en arrière. En mode Couches, les 5 étapes se répartissent
+     entre le début de la plage et le refrain, pour que le drop tombe sur le vrai refrain. « Effacer la plage » revient au mode automatique.
    - La frise montre l'heure exacte de chaque étape, et tu peux **écouter le montage audio** avant de lancer le rendu.
    - **Durées** : choisis un préréglage (Courte ≈ 30 s, Standard ≈ 1 min, Longue ≈ 1 min 30), ou règle toi-même la longueur
      de chaque étape **en mesures** (le logiciel affiche l'équivalent en secondes). Tu peux aussi fixer une durée minimale et

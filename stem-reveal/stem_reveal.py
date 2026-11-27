@@ -241,10 +241,25 @@ def hp_sweep(x, f0, f1):
     return out
 
 
-def arrange(mix, stems, beats, bars, hook, run, min_duration, max_duration=None, stage_bars=None, full_bars=None):
+def split_bars(total, weights):
+    """Split `total` bars into len(weights) whole parts (each >= 1) proportional to weights."""
+    n = len(weights)
+    total = max(n, int(total))
+    w = np.array(weights, float)
+    raw = 1 + (total - n) * w / w.sum()
+    out = np.floor(raw).astype(int)
+    for k in np.argsort(-(raw - out))[: total - out.sum()]:
+        out[k] += 1
+    return [int(x) for x in out]
+
+
+def arrange(mix, stems, beats, bars, hook, run, min_duration, max_duration=None, stage_bars=None, full_bars=None,
+            range_bars=None):
     """stage_bars: bars for each of the 5 build stages (None = automatic).
     full_bars: bars of the FULL SONG part (None = enough to reach min_duration).
-    max_duration: the FULL SONG part is shortened (bar by bar) to stay under it."""
+    max_duration: the FULL SONG part is shortened (bar by bar) to stay under it.
+    range_bars: (first_bar, end_bar) — play that part of the song in one continuous take
+    (no loop, no restart); the build-up ends right on the hook when it is inside."""
     bar_dur = float(np.median(np.diff(bars)))
     if stage_bars:
         stage_bars = [max(1, int(b)) for b in stage_bars][:5]
@@ -261,6 +276,32 @@ def arrange(mix, stems, beats, bars, hook, run, min_duration, max_duration=None,
         a = bars[i] if i < len(bars) else bars[-1] + (i - len(bars) + 1) * bar_dur
         b = bars[i + 1] if i + 1 < len(bars) else a + bar_dur
         return a, b
+
+    if range_bars:
+        A, B = max(0, int(range_bars[0])), min(len(bars), int(range_bars[1]))
+        if B - A < 6:
+            raise ValueError("la plage sélectionnée est trop courte : il faut au moins 6 mesures.")
+        if A + 5 <= hook <= B - 1:                     # drop lands on the real hook
+            stage_bars = split_bars(hook - A, stage_bars)
+        elif sum(stage_bars) > B - A - 1:
+            stage_bars = split_bars(B - A - 1, stage_bars)
+        pre = sum(stage_bars)
+        full, loop = B - A - pre, None
+        segments = []
+        b = 0
+        for st_, nb_ in enumerate(stage_bars):
+            for _ in range(nb_):
+                segments.append((*bar_span(A + b), st_))
+                b += 1
+        for k in range(full):
+            segments.append((*bar_span(A + pre + k), 5))
+        song_end = len(mix) / SR                       # the last bar stops with the file
+        a_, e_, st_ = segments[-1]
+        if e_ > song_end > a_ + 0.5:
+            segments[-1] = (a_, song_end, st_)
+        total = sum(e - a for a, e, _ in segments)
+        return _render_arrangement(mix, stems, beats, bars, hook, segments, stage_bars, full, loop, total,
+                                   bar_dur, (A, B))
 
     # build-up bars (looping inside the hook if it is short)
     segments = []        # (src_a, src_b, stage)
@@ -297,6 +338,14 @@ def arrange(mix, stems, beats, bars, hook, run, min_duration, max_duration=None,
     total = t_pre + sum(bar_span(hook + k)[1] - bar_span(hook + k)[0] for k in range(full))
     if total < min_duration:
         log(f"warning: song too short after the hook, video is {total:.1f}s")
+    return _render_arrangement(mix, stems, beats, bars, hook, segments, stage_bars, full, loop, total, bar_dur, None)
+
+
+def _render_arrangement(mix, stems, beats, bars, hook, segments, stage_bars, full, loop, total, bar_dur, rng_):
+    def bar_span(i):
+        a = bars[i] if i < len(bars) else bars[-1] + (i - len(bars) + 1) * bar_dur
+        b = bars[i + 1] if i + 1 < len(bars) else a + bar_dur
+        return a, b
 
     # ---- render audio, segment by segment, with 10 ms crossfades
     X = int(0.010 * SR)
@@ -382,6 +431,7 @@ def arrange(mix, stems, beats, bars, hook, run, min_duration, max_duration=None,
         bpm=round(60 / float(np.median(np.diff(beats))), 1),
         hook_start_s=round(float(bars[hook]), 2),
         loop_bars=loop, stage_bars=stage_bars, full_bars=full, bar_s=round(bar_dur, 3),
+        range=list(rng_) if rng_ else None,
         stage_starts_s=[round(t, 3) for t in stage_times],
         duration_s=round(len(out) / SR, 2),
         stage_gain_db=[round(20 * math.log10(stage_gain[s]), 1) for s in range(6)],
@@ -903,13 +953,14 @@ def hook_bar_at(ctx, seconds):
     return int(np.argmin(np.abs(ctx["bars"] - seconds)))
 
 
-def build_audio(ctx, hook=None, min_duration=62.0, max_duration=None, stage_bars=None, full_bars=None):
+def build_audio(ctx, hook=None, min_duration=62.0, max_duration=None, stage_bars=None, full_bars=None,
+                range_bars=None):
     hook = ctx["auto_hook"] if hook is None else int(hook)
     hook = int(np.clip(hook, 0, len(ctx["bars"]) - 2))
     run = max(8, section_run(ctx["feats"], hook))
     audio, stage_times, out_beats, out_down, plan = arrange(
         ctx["mix"], ctx["stems"], ctx["beats"], ctx["bars"], hook, run, min_duration,
-        max_duration, stage_bars, full_bars)
+        max_duration, stage_bars, full_bars, range_bars)
     plan["hook_bar"] = hook
     return audio, stage_times, out_beats, plan
 
@@ -929,8 +980,9 @@ def overview(ctx, points=1200):
 
 
 def make_video(ctx, out_path, hook=None, min_duration=62.0, opts=None, progress=None,
-               max_duration=None, stage_bars=None, full_bars=None):
-    audio, stage_times, out_beats, plan = build_audio(ctx, hook, min_duration, max_duration, stage_bars, full_bars)
+               max_duration=None, stage_bars=None, full_bars=None, range_bars=None):
+    audio, stage_times, out_beats, plan = build_audio(ctx, hook, min_duration, max_duration, stage_bars, full_bars,
+                                                      range_bars)
     plan["out"] = out_path
     with open(os.path.splitext(out_path)[0] + ".plan.json", "w") as f:
         json.dump(plan, f, indent=2)

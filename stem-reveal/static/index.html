@@ -33,7 +33,8 @@
   .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
   .chip { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 13px; }
   .chip b { color: var(--accent2); font-weight: 600; }
-  canvas { width: 100%; display: block; border-radius: 10px; background: #0a0e15; cursor: crosshair; }
+  canvas { width: 100%; display: block; border-radius: 10px; background: #0a0e15; cursor: crosshair; touch-action: none; }
+  input:disabled { opacity: .45; }
   .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
   button { font: inherit; border: 1px solid var(--line); background: var(--panel2); color: var(--text);
            padding: 8px 14px; border-radius: 9px; cursor: pointer; }
@@ -109,7 +110,12 @@
       <button id="next-bar" title="Une mesure plus tard">1 mesure ▶</button>
       <button id="auto-hook">Refrain automatique</button>
       <button id="listen-hook">▶ Écouter l'original depuis le refrain</button>
-      <span class="hint">Clique sur la forme d'onde pour choisir où démarre le refrain (calé sur la mesure la plus proche).</span>
+      <button id="range-all">Tout le morceau</button>
+      <button id="range-clear">Effacer la plage</button>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <span class="hint"><b>Clique</b> sur la forme d'onde pour choisir le refrain · <b>Glisse</b> pour sélectionner la partie du son à utiliser
+      (jouée d'un seul tenant, sans boucle). Tout est calé sur la mesure la plus proche.</span>
     </div>
     <audio id="orig" controls preload="auto"></audio>
     <div class="timeline" id="timeline"></div>
@@ -172,6 +178,7 @@ const STAGES = ["MUFFLED VOCALS", "VOCALS", "+ MELODY", "+ BASS", "+ DRUMS", "FU
 const STAGE_COL = ["#3a4560", "#4a5a86", "#5b6fb0", "#6f86d6", "#8aa0f0", "#c7d3ff"];
 const STAGE_LABEL = { decode: "Lecture du fichier…", separate: "Séparation des pistes (voix, mélodie, basse, batterie)…",
                       analyze: "Détection du tempo, des mesures et du refrain…", render: "Rendu de la vidéo…" };
+let range = null, drag = null;
 let song = null, hook = null, plan = null, previewTimer = null, previewSeq = 0, customStages = false, mode = "layers";
 const ESC_PRESETS = {
   court: { pre: 8, drop: "", rings: 250, min: 25, max: 35 },
@@ -188,8 +195,9 @@ function setMode(m) {
   document.querySelectorAll("#modes button").forEach((b) => b.classList.toggle("on", b.dataset.m === m));
   $("dgrid").classList.toggle("hidden", m !== "layers");
   $("egrid").classList.toggle("hidden", m !== "escape");
-  $("dur-hint").innerHTML = DUR_HINT[m];
   markPreset(null); plan = null;
+  $("dur-hint").innerHTML = DUR_HINT[m];
+  if (range) { setRange(range); return; }
   if (song) { $("timeline").innerHTML = ""; drawWave(); durChanged(); }
 }
 ["e-rings", "e-pre", "e-drop"].forEach((id) => $(id).addEventListener("input", () => { markPreset(null); durChanged(); }));
@@ -220,6 +228,11 @@ function updateSecs() {
   }
 }
 function timing() {
+  const t = timingBase();
+  if (range) t.range = range;
+  return t;
+}
+function timingBase() {
   if (mode === "escape")
     return { mode, min_duration: +$("o-min").value || 62, max_duration: +$("o-max").value || null,
              rings: +$("e-rings").value || 500, pre_bars: +$("e-pre").value || 16, drop_bars: +$("e-drop").value || null };
@@ -299,7 +312,7 @@ function loadSong(res) {
   $("orig").src = res.audio_url;
   ["c-timing", "c-render"].forEach((id) => $(id).classList.remove("hidden"));
   $("c-result").classList.add("hidden");
-  buildDurInputs(); customStages = false; markPreset(null); $("dur-hint").innerHTML = DUR_HINT[mode];
+  buildDurInputs(); customStages = false; markPreset(null); range = null; setRange(null);
   drawWave(); schedulePreview(0);
   $("c-timing").scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -309,6 +322,7 @@ function chips() {
   $("chips").innerHTML = [
     ["Tempo", `${song.bpm} BPM`], ["Durée du son", fmt(song.duration)], ["Mesures", bars.length],
     ["Refrain", `${fmt(bars[hook])} (mesure ${hook + 1})${hook === song.auto_hook ? " · auto" : " · manuel"}`],
+    range ? ["Plage", `${fmt(barT(range[0]))} → ${fmt(barT(range[1]))}`] : null,
     plan ? ["Vidéo", `${plan.duration_s.toFixed(1)} s`] : null,
   ].filter(Boolean).map(([k, v]) => `<span class="chip">${k} <b>${v}</b></span>`).join("");
 }
@@ -321,7 +335,8 @@ function drawWave() {
   const D = song.duration, X = (t) => (t / D) * w, mid = h / 2;
   const bars = song.bars;
   // sections used by the video
-  if (plan && plan.mode === "escape") {
+  if (range) { /* the range itself is shown below */ }
+  else if (plan && plan.mode === "escape") {
     g.fillStyle = "rgba(159,180,255,0.10)";
     g.fillRect(X(plan.segment_start_s), 0, X(plan.segment_start_s + plan.duration_s) - X(plan.segment_start_s), h);
   } else if (plan) {
@@ -336,6 +351,16 @@ function drawWave() {
     const x = (i / n) * w, a = song.env[i] * (mid - 6), v = song.venv[i] * (mid - 6);
     g.fillStyle = "#3b4559"; g.fillRect(x, mid - a, Math.max(1, w / n), 2 * a);
     g.fillStyle = "rgba(159,180,255,0.75)"; g.fillRect(x, mid - v, Math.max(1, w / n), 2 * v);
+  }
+  // selected range (outside darkened) / range being dragged
+  const sel = drag && drag.moved ? [Math.min(drag.t0, drag.t1), Math.max(drag.t0, drag.t1)]
+            : range ? [barT(range[0]), barT(range[1])] : null;
+  if (sel) {
+    g.fillStyle = "rgba(0,0,0,0.6)";
+    g.fillRect(0, 0, X(sel[0]), h); g.fillRect(X(sel[1]), 0, w - X(sel[1]), h);
+    g.fillStyle = "#7fe0a8"; g.fillRect(X(sel[0]) - 1, 0, 3, h); g.fillRect(X(sel[1]) - 2, 0, 3, h);
+    g.font = "600 11px Inter, system-ui, sans-serif";
+    g.fillText("DÉBUT", Math.min(X(sel[0]) + 5, w - 40), h - 22); g.fillText("FIN", Math.max(4, X(sel[1]) - 28), h - 22);
   }
   // hook marker
   const hx = X(bars[hook]);
@@ -352,11 +377,42 @@ function drawWave() {
 }
 window.addEventListener("resize", () => song && drawWave());
 
-$("wave").addEventListener("click", (e) => {
-  const r = e.target.getBoundingClientRect(), t = ((e.clientX - r.left) / r.width) * song.duration;
-  let best = 0; song.bars.forEach((b, i) => { if (Math.abs(b - t) < Math.abs(song.bars[best] - t)) best = i; });
-  setHook(best);
+const barT = (i) => (i >= song.bars.length ? song.duration : song.bars[i]);
+const nearestBar = (t) => { let best = 0; song.bars.forEach((b, i) => { if (Math.abs(b - t) < Math.abs(song.bars[best] - t)) best = i; }); return best; };
+const waveT = (e) => { const r = $("wave").getBoundingClientRect(); return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * song.duration; };
+$("wave").addEventListener("pointerdown", (e) => {
+  if (!song) return;
+  $("wave").setPointerCapture(e.pointerId);
+  drag = { x0: e.clientX, t0: waveT(e), t1: waveT(e), moved: false };
 });
+$("wave").addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  drag.t1 = waveT(e);
+  if (Math.abs(e.clientX - drag.x0) > 6) drag.moved = true;
+  if (drag.moved) drawWave();
+});
+$("wave").addEventListener("pointerup", (e) => {
+  if (!drag) return;
+  const d = drag; drag = null;
+  if (!d.moved) { setHook(nearestBar(d.t0)); return; }
+  const lo = Math.min(d.t0, d.t1), hi = Math.max(d.t0, d.t1);
+  const nb = song.bars.length, last = song.bars[nb - 1];
+  let a = nearestBar(lo), b = hi > last + (song.duration - last) / 2 ? nb : nearestBar(hi);
+  if (b - a < 6) { drawWave(); $("plan-hint").classList.add("err"); $("plan-hint").textContent = "⚠ Plage trop courte : sélectionne au moins 6 mesures."; return; }
+  setRange([a, b]);
+});
+$("range-all").onclick = () => song && setRange([0, song.bars.length]);
+$("range-clear").onclick = () => setRange(null);
+function setRange(r) {
+  range = r;
+  ["o-min", "o-max", "e-pre", "e-drop"].forEach((id) => $(id).disabled = !!r);
+  if ($("sb5")) $("sb5").disabled = !!r;
+  $("dur-hint").innerHTML = r ? "<b>Plage sélectionnée :</b> la vidéo joue exactement cette partie du son, d'un seul tenant. " +
+    (mode === "escape" ? "La partie claire finale commence au refrain s'il est dans la plage (sinon vers 60 % de la plage)."
+                       : "Les 5 étapes se répartissent entre le début de la plage et le refrain (s'il est dans la plage), pour que le drop tombe sur le vrai refrain. Les durées min et max ne s'appliquent pas.")
+    : DUR_HINT[mode];
+  markPreset(null); drawWave(); if (song) schedulePreview(150);
+}
 $("prev-bar").onclick = () => setHook(hook - 1);
 $("next-bar").onclick = () => setHook(hook + 1);
 $("auto-hook").onclick = () => setHook(song.auto_hook);
