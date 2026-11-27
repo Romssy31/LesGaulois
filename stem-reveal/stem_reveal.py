@@ -450,9 +450,12 @@ def plan_ball(stage_times, beats):
             sd = -bd + math.sqrt(max(0.0, bd * bd - (pos @ pos - re * re)))
             q = pos + sd * direction                      # keeps flying straight out of the slit
             psi0 = math.atan2(q[1], q[0])
-            sgn = 1 if pos[0] * direction[1] - pos[1] * direction[0] >= 0 else -1
-            inner = RING_R[k - 1] + BALL_R + 8            # chords never touch the ring it escaped
-            delta = 0.78 * 2 * math.acos(min(0.999, inner / re))
+            cross = pos[0] * direction[1] - pos[1] * direction[0]
+            sgn = 1 if cross >= 0 else -1
+            # the ring it left is gone: plain mirror reflection keeps the same line
+            # offset from the centre; clamped so it never just goes back and forth
+            delta = 2 * math.acos(min(0.999, abs(cross) / re))
+            delta = min(max(delta, math.radians(75)), math.radians(150))
         angs = [psi0 + sgn * j * delta for j in range(len(bt))]
         pts = [np.array([re * math.cos(x), re * math.sin(x)]) for x in angs]
         for tb, pt, an in zip(bt[:-1], pts[:-1], angs[:-1]):
@@ -510,8 +513,20 @@ def draw_rings(c, t, stage, fade, pulse):
             layers = ((16, 12, 0.30 + 0.35 * pulse, accent), (0, 5, 1.0, (255, 255, 255)))
         elif k > stage:
             layers = ((0, 3, 0.42, (205, 215, 235)),)
-        else:                                               # already escaped: stays, dimmed
-            layers = ((0, 2.5, 0.18, (205, 215, 235)),)
+        else:                                               # escaped: bursts and disappears
+            dt = t - G["ball"]["gaps"][k][2]
+            if dt >= 0.45:
+                continue
+            q = dt / 0.45
+            r = r * (1 + 0.10 * ease_out(q))
+            rect = skia.Rect(CX - r, CY - r, CX + r, CY + r)
+            layers = ((10, 8, 0.6 * (1 - q), accent), (0, 4 * (1 - q) + 1, (1 - q) ** 1.5, (255, 255, 255)))
+            dp = skia.Paint(AntiAlias=True)
+            for j in range(96):
+                a = g + j * 2 * math.pi / 96 + 0.02 * math.sin(j * 7.1)
+                rr = r + (40 + 90 * ((j * 37) % 11) / 10) * ease_out(q)
+                dp.setColor4f(rgba(255, 255, 255, 0.8 * (1 - q) ** 1.2 * fade))
+                c.drawCircle(CX + rr * math.cos(a), CY + rr * math.sin(a), 2.2, dp)
         for sig, wdt, al, col in layers:
             pa = skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=wdt,
                             StrokeCap=skia.Paint.kRound_Cap)
@@ -524,7 +539,7 @@ def draw_rings(c, t, stage, fade, pulse):
         tw = G["f_tag"].measureText(lab)
         tag = skia.RRect.MakeRectXY(skia.Rect(CX - tw / 2 - 12, CY - r - 17, CX + tw / 2 + 12, CY - r + 17), 6, 6)
         act = k == stage
-        ta = (1.0 if act else 0.6 if k > stage else 0.3) * fade
+        ta = (1.0 if act else 0.6 if k > stage else 1 - min(1.0, (t - G["ball"]["gaps"][k][2]) / 0.3)) * fade
         fp = skia.Paint(AntiAlias=True)
         fp.setColor4f(rgba(235, 240, 250, ta) if act else rgba(24, 31, 44, ta))
         c.drawRRect(tag, fp)
