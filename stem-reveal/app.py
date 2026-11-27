@@ -88,7 +88,8 @@ def escape_args(p):
     db = p.get("drop_bars")
     return dict(range_bars=t["range_bars"], min_duration=t["min_duration"], max_duration=t["max_duration"],
                 rings=int(p.get("rings") or 500), pre_bars=int(p.get("pre_bars") or 16),
-                drop_bars=int(db) if db not in (None, "", 0) else None)
+                drop_bars=int(db) if db not in (None, "", 0) else None,
+                pattern=str(p["pattern"]) if p.get("pattern") else None)
 
 
 def render_job(job, sid, hook, timing, opts, mode="layers"):

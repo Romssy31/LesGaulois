@@ -35,7 +35,9 @@ def wrap(a):
 
 # ----------------------------------------------------------------------------- timeline + audio
 def build_escape(ctx, hook=None, min_duration=62.0, max_duration=None, rings=500, pre_bars=16,
-                 drop_bars=None, outro_bars=2, range_bars=None):
+                 drop_bars=None, outro_bars=2, range_bars=None, pattern=None):
+    """pattern: optional manual muffled/clear choice, one character per beat of the video
+    before the finale ("0" = muffled, "1" = clear). Boundaries therefore always fall on beats."""
     bars, beats, mix = ctx["bars"], ctx["beats"], ctx["mix"]
     nb = len(bars)
     hook = ctx["auto_hook"] if hook is None else int(hook)
@@ -111,6 +113,26 @@ def build_escape(ctx, hook=None, min_duration=62.0, max_duration=None, rings=500
         else:
             merged.append(list(p))
     phases = merged
+    pattern_beats = [float(b) for b in beats_out if b < finale - 0.05]
+    if pattern_beats and pattern_beats[0] > 0.05:
+        pattern_beats.insert(0, 0.0)
+    if pattern:
+        bits = [ch == "1" for ch in str(pattern)][: len(pattern_beats)]
+        bits += [bits[-1] if bits else True] * (len(pattern_beats) - len(bits))
+        if not any(bits):
+            raise ValueError("il faut au moins un temps « clair » : sinon la bille ne casse jamais d'anneau.")
+        phases = []
+        for j, on in enumerate(bits):
+            t0 = pattern_beats[j]
+            t1 = pattern_beats[j + 1] if j + 1 < len(pattern_beats) else finale
+            kind = "C" if on else "M"
+            if phases and phases[-1][2] == kind:
+                phases[-1][1] = t1
+            else:
+                phases.append([t0, t1, kind])
+        if phases[-1][2] == "M":                     # after the last clear moment comes the finale
+            finale = phases[-1][0]
+            phases.pop()
 
     # ---- audio: one continuous take of the song, low-passed while the ball is stuck
     a, b = int(round(s0 * S.SR)), int(round(end * S.SR))
@@ -138,7 +160,8 @@ def build_escape(ctx, hook=None, min_duration=62.0, max_duration=None, rings=500
                 hook_start_s=round(bt(hook), 2), segment_start_s=round(s0, 2), pre_bars=pre, drop_bars=F,
                 outro_bars=out_b, rings=int(rings), bar_s=round(bar_dur, 3),
                 phases=[[round(p[0], 3), round(p[1], 3), p[2]] for p in phases],
-                finale_s=round(finale, 3), duration_s=round(len(audio) / S.SR, 2))
+                finale_s=round(finale, 3), duration_s=round(len(audio) / S.SR, 2),
+                pattern_beats=[round(b, 3) for b in pattern_beats], manual=bool(pattern))
     return audio.astype(np.float32), beats_out, plan
 
 

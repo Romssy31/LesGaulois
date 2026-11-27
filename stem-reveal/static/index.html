@@ -67,6 +67,12 @@
   .presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
   .presets button.on { border-color: var(--accent); color: var(--accent2); }
   .err { color: var(--err) !important; }
+  .patscroll { overflow-x: auto; margin-top: 8px; border-radius: 8px; border: 1px solid var(--line); }
+  .pat { display: flex; height: 38px; user-select: none; touch-action: none; cursor: pointer; }
+  .pat div { flex: 0 0 auto; height: 100%; border-left: 1px solid #0b0f1880; background: #2a3246; }
+  .pat div.on { background: #8aa0f0; }
+  .pat div.bar { border-left: 2px solid #e8edf6aa; }
+  .pat div.hook { border-left: 3px solid #fff; }
   .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
   .modes button { text-align: left; padding: 12px 14px; }
   .modes button b { display: block; font-size: 15px; }
@@ -119,6 +125,15 @@
     </div>
     <audio id="orig" controls preload="auto"></audio>
     <div class="timeline" id="timeline"></div>
+    <div id="pat-wrap" class="hidden" style="margin-top:12px">
+      <div class="row" style="margin-top:0;justify-content:space-between">
+        <b style="font-size:13px">Étouffé / clair, temps par temps <span id="pat-state" class="hint"></span></b>
+        <button id="pat-auto">Automatique</button>
+      </div>
+      <div class="patscroll"><div id="pat" class="pat"></div></div>
+      <span class="hint">Clique ou glisse pour peindre : <b>sombre = étouffé</b>, <b style="color:#8aa0f0">coloré = clair</b>. Une case = un temps,
+      les traits = débuts de mesure, le trait épais = le refrain. Après le dernier moment clair, c'est le FINAL.</span>
+    </div>
     <div class="row"><span class="hint" id="plan-hint"></span></div>
     <div class="durs">
       <h3>Durées</h3>
@@ -178,7 +193,7 @@ const STAGES = ["MUFFLED VOCALS", "VOCALS", "+ MELODY", "+ BASS", "+ DRUMS", "FU
 const STAGE_COL = ["#3a4560", "#4a5a86", "#5b6fb0", "#6f86d6", "#8aa0f0", "#c7d3ff"];
 const STAGE_LABEL = { decode: "Lecture du fichier…", separate: "Séparation des pistes (voix, mélodie, basse, batterie)…",
                       analyze: "Détection du tempo, des mesures et du refrain…", render: "Rendu de la vidéo…" };
-let range = null, drag = null;
+let range = null, drag = null, pattern = null, paint = null, paintLast = 0;
 let song = null, hook = null, plan = null, previewTimer = null, previewSeq = 0, customStages = false, mode = "layers";
 const ESC_PRESETS = {
   court: { pre: 8, drop: "", rings: 250, min: 25, max: 35 },
@@ -191,7 +206,8 @@ const DUR_HINT = {
 };
 document.querySelectorAll("#modes button").forEach((b) => b.onclick = () => setMode(b.dataset.m));
 function setMode(m) {
-  mode = m;
+  mode = m; pattern = null;
+  $("pat-wrap").classList.toggle("hidden", m !== "escape");
   document.querySelectorAll("#modes button").forEach((b) => b.classList.toggle("on", b.dataset.m === m));
   $("dgrid").classList.toggle("hidden", m !== "layers");
   $("egrid").classList.toggle("hidden", m !== "escape");
@@ -230,6 +246,7 @@ function updateSecs() {
 function timing() {
   const t = timingBase();
   if (range) t.range = range;
+  if (mode === "escape" && pattern) t.pattern = pattern;
   return t;
 }
 function timingBase() {
@@ -242,7 +259,8 @@ function timingBase() {
   return t;
 }
 function markPreset(name) { document.querySelectorAll(".presets button").forEach((b) => b.classList.toggle("on", b.dataset.p === name)); }
-function durChanged() { updateSecs(); if (song) schedulePreview(400); }
+function durChanged() { pattern = null; durChanged2(); }
+function durChanged2() { updateSecs(); if (song) schedulePreview(400); }
 document.querySelectorAll(".presets button").forEach((b) => b.onclick = () => {
   if (mode === "escape") {
     const e = ESC_PRESETS[b.dataset.p];
@@ -404,7 +422,7 @@ $("wave").addEventListener("pointerup", (e) => {
 $("range-all").onclick = () => song && setRange([0, song.bars.length]);
 $("range-clear").onclick = () => setRange(null);
 function setRange(r) {
-  range = r;
+  range = r; pattern = null;
   ["o-min", "o-max", "e-pre", "e-drop"].forEach((id) => $(id).disabled = !!r);
   if ($("sb5")) $("sb5").disabled = !!r;
   $("dur-hint").innerHTML = r ? "<b>Plage sélectionnée :</b> la vidéo joue exactement cette partie du son, d'un seul tenant. " +
@@ -419,6 +437,7 @@ $("auto-hook").onclick = () => setHook(song.auto_hook);
 $("listen-hook").onclick = () => { const a = $("orig"); a.currentTime = song.bars[hook]; a.play(); };
 
 function setHook(b) {
+  pattern = null;
   hook = Math.max(0, Math.min(song.bars.length - 2, b));
   drawWave(); schedulePreview(350);
 }
@@ -440,6 +459,7 @@ async function runPreview() {
     updateSecs();
     drawTimeline(); drawWave();
     if (plan.mode === "escape") {
+      buildPattern();
       const nC = plan.phases.filter((p) => p[2] === "C").length;
       $("plan-hint").textContent = `${nC} passages dans la fente, chacun commence et finit sur un temps ; la bille rebondit sur chaque temps. ` +
         `Le compteur arrive à 0 à ${fmt(plan.finale_s)}. Écoute le montage ci-dessous avant de générer.`;
@@ -449,6 +469,43 @@ async function runPreview() {
       `Écoute le montage ci-dessous avant de générer. ${plan.loop_bars ? `(Le refrain est court : il tourne en boucle de ${plan.loop_bars} mesures pendant la montée.)` : ""}`;
   } catch (e) { if (seq === previewSeq) { $("plan-hint").classList.add("err"); $("plan-hint").textContent = "⚠ " + e.message; } }
 }
+
+function buildPattern() {
+  const pb = plan.pattern_beats || [], fin = plan.finale_s;
+  const inClear = (t) => plan.phases.some(([a, b, k]) => k === "C" && t >= a - 1e-3 && t < b - 1e-3);
+  const s0 = plan.segment_start_s, barSet = song.bars.map((b) => b - s0);
+  const hookT = plan.hook_start_s - s0;
+  const total = pb.length ? (fin > pb[pb.length - 1] ? fin : pb[pb.length - 1] + 0.5) : 1;
+  const W = Math.max($("pat").parentElement.clientWidth - 2, pb.length * 7);
+  $("pat").style.width = W + "px";
+  $("pat").innerHTML = pb.map((t, j) => {
+    const t1 = j + 1 < pb.length ? pb[j + 1] : Math.max(fin, t + 0.3);
+    const w = Math.max(6, ((t1 - t) / total) * W);
+    const cls = [(pattern ? pattern[j] === "1" : inClear(t + 0.01)) ? "on" : "",
+                 Math.abs(t - hookT) < 0.05 ? "hook" : barSet.some((b) => Math.abs(b - t) < 0.05) ? "bar" : ""];
+    return `<div data-j="${j}" class="${cls.join(" ")}" style="width:${w}px" title="${fmt(t)}"></div>`;
+  }).join("");
+  $("pat-state").textContent = pattern ? "· réglage manuel" : "· automatique";
+}
+function readPattern() { return [...$("pat").children].map((c) => (c.classList.contains("on") ? "1" : "0")).join(""); }
+$("pat").addEventListener("pointerdown", (e) => {
+  const c = e.target.closest("[data-j]"); if (!c) return;
+  $("pat").setPointerCapture(e.pointerId);
+  paint = !c.classList.contains("on"); c.classList.toggle("on", paint); paintLast = +c.dataset.j;
+});
+$("pat").addEventListener("pointermove", (e) => {
+  if (paint === null) return;
+  const el = document.elementFromPoint(e.clientX, e.clientY);
+  const c = el && el.closest && el.closest("#pat [data-j]"); if (!c) return;
+  const j = +c.dataset.j, kids = $("pat").children;            // fill every beat between two mouse positions
+  for (let k = Math.min(j, paintLast); k <= Math.max(j, paintLast); k++) kids[k].classList.toggle("on", paint);
+  paintLast = j;
+});
+$("pat").addEventListener("pointerup", () => {
+  if (paint === null) return;
+  paint = null; pattern = readPattern(); $("pat-state").textContent = "· réglage manuel"; schedulePreview(150);
+});
+$("pat-auto").onclick = () => { pattern = null; schedulePreview(0); };
 
 function drawTimeline() {
   if (plan.mode === "escape") {

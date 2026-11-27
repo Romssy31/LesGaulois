@@ -23,6 +23,8 @@ Une bille part du centre, rebondit sur chaque temps et sort d'un anneau à chaqu
   Les passages dans la fente commencent et finissent sur un temps (à la fin de chaque phrase de 4 mesures,
   de plus en plus longs), le refrain est entièrement clair et le compteur arrive à 0 pile à la fin, puis le spectre apparaît.
   Réglages : nombre d'anneaux, mesures avant le refrain, mesures de refrain (auto), durées min et max.
+  Tu peux aussi régler **à la main** les moments étouffés et clairs : sous la frise, une grille montre chaque temps de la vidéo
+  (clique ou glisse pour peindre sombre = étouffé, coloré = clair). Le bouton « Automatique » remet le motif calculé.
 
 ## Lancer le logiciel
 
