@@ -14,7 +14,9 @@ Le script génère une vidéo verticale 1080×1920 à 30 i/s, d'au moins 62 s, a
 **Tout est calé sur la musique :**
 - le tempo, les temps et les débuts de mesure sont détectés automatiquement ;
 - chaque changement tombe exactement sur un début de mesure ;
-- la comète finit son tour pile au moment où la couche suivante entre ;
+- une bille part du centre et rebondit dans les anneaux, avec un rebond sur chaque temps ;
+- chaque anneau a une fente qui tourne : sa vitesse est calculée pour que la bille passe dans la fente pile au début de mesure où la couche suivante entre (et jamais avant) ;
+- les anneaux passés restent affichés (atténués), et la bille ne les touche plus ;
 - la lueur, les bulles et le cercle central pulsent sur la grosse caisse ;
 - le refrain (ou le drop) est trouvé automatiquement : c'est la partie la plus forte avec de la voix.
 

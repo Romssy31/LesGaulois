@@ -421,6 +421,176 @@ def rgba(r, g, b, a):
     return skia.Color4f(r / 255, g / 255, b / 255, float(min(max(a, 0), 1)))
 
 
+# ----------------------------------------------------------------------------- ball & rings
+RING_R = [125, 200, 275, 350, 425]
+BALL_R = 13
+CX, CY = W / 2, 1010
+
+
+def wrap(a):
+    return (a + math.pi) % (2 * math.pi) - math.pi
+
+
+def plan_ball(stage_times, beats):
+    """Ball path: one bounce on every beat, escape through the ring's slit on the
+    exact downbeat where the next layer comes in. Each ring's slit rotates so that
+    it reaches the escape point at that instant and is never under an earlier bounce."""
+    beats = np.sort(np.asarray(beats, float))
+    keys = [(0.0, 0.0, 0.0)]
+    hits, gaps, escapes = [], [], []
+    pos, direction = np.zeros(2), None
+    for k in range(5):
+        T0, T1 = stage_times[k], stage_times[k + 1]
+        bt = [float(b) for b in beats if T0 + 0.05 < b < T1 - 0.05] + [T1]
+        re = RING_R[k] - BALL_R - 3                       # ball centre radius at contact
+        if k == 0:
+            delta, sgn, psi0 = math.radians(137.5), 1, math.radians(-55)
+        else:
+            bd = pos @ direction
+            sd = -bd + math.sqrt(max(0.0, bd * bd - (pos @ pos - re * re)))
+            q = pos + sd * direction                      # keeps flying straight out of the slit
+            psi0 = math.atan2(q[1], q[0])
+            sgn = 1 if pos[0] * direction[1] - pos[1] * direction[0] >= 0 else -1
+            inner = RING_R[k - 1] + BALL_R + 8            # chords never touch the ring it escaped
+            delta = 0.78 * 2 * math.acos(min(0.999, inner / re))
+        angs = [psi0 + sgn * j * delta for j in range(len(bt))]
+        pts = [np.array([re * math.cos(x), re * math.sin(x)]) for x in angs]
+        for tb, pt, an in zip(bt[:-1], pts[:-1], angs[:-1]):
+            keys.append((tb, pt[0], pt[1]))
+            hits.append((tb, pt[0], pt[1], k, an))
+        prev_t, prev = (bt[-2], pts[-2]) if len(pts) > 1 else (T0, pos)
+        # the ball's centre is right in the slit (ring radius) at the exact layer change
+        dd = (pts[-1] - prev) / (np.linalg.norm(pts[-1] - prev) + 1e-9)
+        bd = prev @ dd
+        e = prev + (-bd + math.sqrt(max(0.0, bd * bd - (prev @ prev - RING_R[k] ** 2)))) * dd
+        angs[-1] = math.atan2(e[1], e[0])
+        keys.append((T1, e[0], e[1]))
+        direction = (e - prev) / (np.linalg.norm(e - prev) + 1e-9)
+        speed = np.linalg.norm(e - prev) / max(1e-3, T1 - prev_t)
+        pos = e
+        escapes.append((T1, e[0], e[1], math.atan2(direction[1], direction[0]), k))
+        # slit: centre angle(t) = phi + omega * (t - T1)
+        half = max(math.radians(7.5), (BALL_R + 17) / RING_R[k])
+        margin = (BALL_R + 12) / RING_R[k]
+        phi, best = angs[-1], None
+        for om_deg in (40, -40, 55, -55, 30, -30, 75, -75, 95, -95, 22, -22, 120, -120, 150, -150):
+            om = math.radians(om_deg)
+            dmin = min([abs(wrap(an - (phi + om * (tb - T1)))) for an, tb in zip(angs[:-1], bt[:-1])] or [9.0])
+            if best is None or dmin > best[0]:
+                best = (dmin, om)
+            if dmin > half + margin:
+                best = (dmin, om)
+                break
+        gaps.append((phi, best[1], T1, half))
+    end = pos + direction * max(speed, 500) * 2.0
+    keys.append((stage_times[5] + 2.0, end[0], end[1]))
+    k_ = np.array(keys)
+    return dict(kt=k_[:, 0], kx=k_[:, 1], ky=k_[:, 2], hits=hits, gaps=gaps, escapes=escapes)
+
+
+def ball_pos(t):
+    B = G["ball"]
+    return CX + float(np.interp(t, B["kt"], B["kx"])), CY + float(np.interp(t, B["kt"], B["ky"]))
+
+
+def slit_angle(k, t):
+    phi, om, T1, half = G["ball"]["gaps"][k]
+    return phi + om * (t - T1), half
+
+
+def draw_rings(c, t, stage, fade, pulse):
+    skia = G["skia"]
+    accent = G["accent"]
+    for k in range(5):
+        r = RING_R[k]
+        g, half = slit_angle(k, t)
+        rect = skia.Rect(CX - r, CY - r, CX + r, CY + r)
+        start, sweep = math.degrees(g + half), 360 - math.degrees(2 * half)
+        if k == stage:
+            layers = ((16, 12, 0.30 + 0.35 * pulse, accent), (0, 5, 1.0, (255, 255, 255)))
+        elif k > stage:
+            layers = ((0, 3, 0.42, (205, 215, 235)),)
+        else:                                               # already escaped: stays, dimmed
+            layers = ((0, 2.5, 0.18, (205, 215, 235)),)
+        for sig, wdt, al, col in layers:
+            pa = skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=wdt,
+                            StrokeCap=skia.Paint.kRound_Cap)
+            pa.setColor4f(rgba(*col, al * fade))
+            if sig:
+                pa.setMaskFilter(skia.MaskFilter.MakeBlur(skia.kNormal_BlurStyle, sig))
+            c.drawArc(rect, start, sweep, False, pa)
+        # label tag on top of each ring
+        lab = RING_LABELS[k]
+        tw = G["f_tag"].measureText(lab)
+        tag = skia.RRect.MakeRectXY(skia.Rect(CX - tw / 2 - 12, CY - r - 17, CX + tw / 2 + 12, CY - r + 17), 6, 6)
+        act = k == stage
+        ta = (1.0 if act else 0.6 if k > stage else 0.3) * fade
+        fp = skia.Paint(AntiAlias=True)
+        fp.setColor4f(rgba(235, 240, 250, ta) if act else rgba(24, 31, 44, ta))
+        c.drawRRect(tag, fp)
+        if not act:
+            sp = skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=1.5)
+            sp.setColor4f(rgba(120, 135, 160, ta * 0.8))
+            c.drawRRect(tag, sp)
+        tp = skia.Paint(AntiAlias=True)
+        tp.setColor4f(rgba(12, 16, 24, ta) if act else rgba(170, 182, 200, ta))
+        c.drawString(lab, CX - tw / 2, CY - r + 8, G["f_tag"], tp)
+
+
+def draw_hits(c, t):
+    skia = G["skia"]
+    for tb, x, y, k, an in G["ball"]["hits"]:
+        dt = t - tb
+        if 0 <= dt < 0.35:
+            a = (1 - dt / 0.35) ** 2
+            r = RING_R[k]
+            pa = skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=10,
+                            StrokeCap=skia.Paint.kRound_Cap,
+                            MaskFilter=skia.MaskFilter.MakeBlur(skia.kNormal_BlurStyle, 8))
+            pa.setColor4f(rgba(*G["accent"], 0.9 * a))
+            c.drawArc(skia.Rect(CX - r, CY - r, CX + r, CY + r), math.degrees(an) - 14, 28, False, pa)
+            rp = skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=2)
+            rp.setColor4f(rgba(255, 255, 255, 0.6 * a))
+            c.drawCircle(CX + x, CY + y, BALL_R + 40 * (dt / 0.35) ** 0.6, rp)
+
+
+def draw_escape(c, t):
+    skia = G["skia"]
+    pp = skia.Paint(AntiAlias=True)
+    for (T1, x, y, ang, k) in G["ball"]["escapes"]:
+        dt = t - T1
+        if not 0 <= dt < 1.5:
+            continue
+        if dt < 0.4:                                        # flash in the slit
+            fl = skia.Paint(AntiAlias=True, MaskFilter=skia.MaskFilter.MakeBlur(skia.kNormal_BlurStyle, 22))
+            fl.setColor4f(rgba(*G["accent"], 0.9 * (1 - dt / 0.4)))
+            c.drawCircle(CX + x, CY + y, 34 + 60 * dt, fl)
+        for a0, vr, vt, life, sz in G["bursts"][k]:
+            if dt > life:
+                continue
+            aa = ang + (a0 - math.pi) * 0.45
+            sp = 90 + 2.2 * abs(vr)
+            d = sp * dt * (1 - 0.35 * dt / life)
+            pp.setColor4f(rgba(255, 255, 255, 0.9 * (1 - dt / life) ** 1.5))
+            c.drawCircle(CX + x + d * math.cos(aa), CY + y + d * math.sin(aa), sz, pp)
+
+
+def draw_ball(c, t, fade, pulse):
+    skia = G["skia"]
+    tr = skia.Paint(AntiAlias=True)
+    for j in range(16, 0, -1):
+        x, y = ball_pos(t - j * 0.011)
+        tr.setColor4f(rgba(*G["accent"], 0.45 * (1 - j / 17) ** 1.6 * fade))
+        c.drawCircle(x, y, BALL_R * (1 - j / 22), tr)
+    x, y = ball_pos(t)
+    gl = skia.Paint(AntiAlias=True, MaskFilter=skia.MaskFilter.MakeBlur(skia.kNormal_BlurStyle, 14 + 8 * pulse))
+    gl.setColor4f(rgba(*G["accent"], 0.85 * fade))
+    c.drawCircle(x, y, BALL_R + 8 + 5 * pulse, gl)
+    core = skia.Paint(AntiAlias=True)
+    core.setColor4f(rgba(255, 255, 255, fade))
+    c.drawCircle(x, y, BALL_R, core)
+
+
 def render_frame(i):
     skia = G["skia"]
     t = i / FPS
@@ -432,7 +602,7 @@ def render_frame(i):
     pulse = float(G["pulse"][min(i, len(G["pulse"]) - 1)])
     level = float(G["level"][min(i, len(G["level"]) - 1)])
     accent = G["accent"]
-    cx, cy = W / 2, 1010
+    cx, cy = CX, CY
 
     surface = G["surface"]
     c = surface.getCanvas()
@@ -455,88 +625,18 @@ def render_frame(i):
     glow = lambda sigma: skia.MaskFilter.MakeBlur(skia.kNormal_BlurStyle, sigma)
 
     if stage < 5:
-        R0, D = 250, 50
-        z = (stage - 1) + ease_out((t - ts) / 0.45) if stage > 0 else 0.0
-        # center shade
-        c.drawCircle(cx, cy, R0 * 0.62, skia.Paint(AntiAlias=True, Shader=skia.GradientShader.MakeRadial(
-            skia.Point(cx, cy), R0 * 0.62, [skia.Color(3, 4, 7, 235), skia.Color(3, 4, 7, 0)])))
-        for k in range(4, -1, -1):
-            r = R0 + (k - z) * D
-            if k < stage:                                   # ring just completed: collapse
-                fade = 1 - min(1, (z - k) * 1.6)
-                if fade <= 0:
-                    continue
-                pa = skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=4)
-                pa.setColor4f(rgba(255, 255, 255, 0.9 * fade))
-                c.drawCircle(cx, cy, max(10, r), pa)
-                continue
-            rect = skia.Rect(cx - r, cy - r, cx + r, cy + r)
-            if k == stage:
-                base = skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=3)
-                base.setColor4f(rgba(210, 222, 240, 0.20 + 0.10 * pulse))
-                c.drawCircle(cx, cy, r, base)
-                sweep = 360 * min(1, p)
-                for sig, wdt, al in ((18, 14, 0.35 + 0.35 * pulse), (5, 7, 0.55), (0, 4.5, 1.0)):
-                    pa = skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=wdt,
-                                    StrokeCap=skia.Paint.kRound_Cap)
-                    pa.setColor4f(rgba(*accent, al) if sig == 18 else rgba(255, 255, 255, al))
-                    if sig:
-                        pa.setMaskFilter(glow(sig))
-                    c.drawArc(rect, -90, sweep, False, pa)
-                # comet: trail + head
-                ang = math.radians(-90 + sweep)
-                for j in range(26):
-                    aa = ang - math.radians(j * 1.6)
-                    pa = skia.Paint(AntiAlias=True)
-                    pa.setColor4f(rgba(255, 255, 255, 0.9 * (1 - j / 26) ** 2))
-                    c.drawCircle(cx + r * math.cos(aa), cy + r * math.sin(aa), 7 * (1 - j / 30), pa)
-                hp = skia.Paint(AntiAlias=True, MaskFilter=glow(14 + 10 * pulse))
-                hp.setColor4f(rgba(*accent, 0.9))
-                c.drawCircle(cx + r * math.cos(ang), cy + r * math.sin(ang), 16 + 8 * pulse, hp)
-                hp2 = skia.Paint(AntiAlias=True)
-                hp2.setColor4f(rgba(255, 255, 255, 1))
-                c.drawCircle(cx + r * math.cos(ang), cy + r * math.sin(ang), 8, hp2)
-            else:                                           # upcoming rings: rotating broken arcs
-                al = max(0.0, 0.30 - 0.05 * (k - z - 1))
-                pa = skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=2.6,
-                                StrokeCap=skia.Paint.kRound_Cap)
-                pa.setColor4f(rgba(200, 212, 232, al))
-                rot = t * (14 + 6 * k) * (1 if k % 2 else -1) + 40 * k
-                gap = 46 + 22 * math.sin(t * 0.7 + k)
-                c.drawArc(rect, rot, 360 - gap, False, pa)
-            # ring tag
-            lab = RING_LABELS[k]
-            tw = G["f_tag"].measureText(lab)
-            tag = skia.RRect.MakeRectXY(skia.Rect(cx - tw / 2 - 12, cy - r - 17, cx + tw / 2 + 12, cy - r + 17), 6, 6)
-            act = (k == stage)
-            ta = 1.0 if act else max(0.0, 0.55 - 0.1 * (k - z - 1))
-            fp = skia.Paint(AntiAlias=True)
-            fp.setColor4f(rgba(235, 240, 250, ta) if act else rgba(30, 38, 52, ta))
-            c.drawRRect(tag, fp)
-            if not act:
-                sp = skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=1.5)
-                sp.setColor4f(rgba(120, 135, 160, ta * 0.8))
-                c.drawRRect(tag, sp)
-            tp = skia.Paint(AntiAlias=True)
-            tp.setColor4f(rgba(12, 16, 24, 1) if act else rgba(170, 182, 200, ta))
-            c.drawString(lab, cx - tw / 2, cy - r + 8, G["f_tag"], tp)
-
-        # burst of particles when a layer arrives
-        if stage > 0 and t - ts < 1.6:
-            dt = t - ts
-            rr = R0 + (stage - 1 - z) * D
-            pp = skia.Paint(AntiAlias=True)
-            for a0, vr, vt, life, sz in G["bursts"][stage - 1]:
-                if dt > life:
-                    continue
-                k_ = dt / life
-                rad = rr + vr * dt
-                a = a0 + vt * dt / max(rad, 40) * 0.6
-                pp.setColor4f(rgba(255, 255, 255, 0.85 * (1 - k_) ** 1.5))
-                c.drawCircle(cx + rad * math.cos(a), cy + rad * math.sin(a), sz, pp)
+        draw_rings(c, t, stage, 1.0, pulse)
+        draw_hits(c, t)
+        draw_escape(c, t)
+        draw_ball(c, t, 1.0, pulse)
     else:
         # FULL SONG: radial spectrum
         dt = t - ts
+        out = 1 - ease_out(dt / 0.7)
+        if out > 0:
+            draw_rings(c, t, 5, out, pulse)
+            draw_escape(c, t)
+            draw_ball(c, t, out, pulse)
         spec = G["spec"][min(i, len(G["spec"]) - 1)]
         nb = len(spec)
         appear = ease_out(dt / 0.5)
@@ -613,7 +713,7 @@ def render_frame(i):
     return surface.makeImageSnapshot().toarray().tobytes()
 
 
-def render_video(audio, stage_times, args, plan, out_path, workdir):
+def render_video(audio, stage_times, out_beats, args, plan, out_path, workdir):
     duration = len(audio) / SR
     n_frames = int(duration * FPS)
     pulse, level, spec = audio_features(audio, n_frames, stage_times[5])
@@ -622,7 +722,7 @@ def render_video(audio, stage_times, args, plan, out_path, workdir):
     accent = tuple(int(args.accent.lstrip("#")[k:k + 2], 16) for k in (0, 2, 4))
     state = dict(stage_times=stage_times, duration=duration, pulse=pulse, level=level, spec=spec,
                  accent=accent, handle=args.handle, credit=args.credit,
-                 cta=(args.cta, args.cta2))
+                 cta=(args.cta, args.cta2), ball=plan_ball(stage_times, out_beats))
     ff = subprocess.Popen(
         ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgra", "-s", f"{W}x{H}",
          "-r", str(FPS), "-i", "-", "-i", wav, "-c:v", "libx264", "-preset", "medium", "-crf", "18",
@@ -686,7 +786,7 @@ def main():
     log("plan:", json.dumps(plan))
     with open(os.path.splitext(args.out)[0] + ".plan.json", "w") as f:
         json.dump(plan, f, indent=2)
-    render_video(audio, stage_times, args, plan, args.out, work)
+    render_video(audio, stage_times, out_beats, args, plan, args.out, work)
 
 
 if __name__ == "__main__":
