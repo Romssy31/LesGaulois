@@ -16,8 +16,10 @@ Une bille part du centre, rebondit sur chaque temps et sort d'un anneau à chaqu
 
 - **Couches** (ci-dessus) : 5 anneaux, chaque sortie de la bille ajoute une couche du son.
 - **Échappée** : des centaines d'anneaux fins autour d'un petit cercle, avec un compteur au centre.
-  Tant que la bille rebondit contre la paroi, la musique est **étouffée**. Quand elle passe par la fente qui tourne,
-  les anneaux cassent un par un, le compteur descend et la musique devient **claire**.
+  La bille rebondit contre l'anneau le plus à l'intérieur (en blanc) : tant qu'elle tape à côté de sa fente, la musique est **étouffée**.
+  Quand elle tombe dans la fente, l'anneau casse, le suivant devient le nouveau mur, le compteur descend et la musique devient **claire**.
+  Chaque anneau tourne à sa propre vitesse : les fentes forment des bras de spirale qui se tordent et se rejoignent sous la bille
+  au moment exact où chaque anneau doit casser.
   Les passages dans la fente commencent et finissent sur un temps (à la fin de chaque phrase de 4 mesures,
   de plus en plus longs), le refrain est entièrement clair et le compteur arrive à 0 pile à la fin, puis le spectre apparaît.
   Réglages : nombre d'anneaux, mesures avant le refrain, mesures de refrain (auto), durées min et max.

@@ -20,17 +20,13 @@ import stem_reveal as S
 RC = 150.0                    # radius of the centre circle (the ball's cage)
 SP = 4.6                      # spacing between rings (px)
 MAX_R = 1170.0                # rings beyond this radius are off screen
-HB = math.radians(24)         # half-width of the slit in the centre circle
-OMEGA = math.radians(55)      # rotation speed of the slit (rad/s)
+HB = math.radians(24)         # base half-width of a ring's slit
+OMEGA = math.radians(55)      # average rotation speed of the rings (rad/s)
 MARGIN = math.radians(16)     # a bounce never lands closer than this to the slit
 BALL_R = 13
 CX, CY = S.W / 2, 960
 
 DEFAULTS = dict(rings=500, pre_bars=16, drop_bars=None, outro_bars=2)
-
-
-def theta(t):
-    return OMEGA * t - math.pi / 2
 
 
 def wrap(a):
@@ -147,93 +143,147 @@ def build_escape(ctx, hook=None, min_duration=62.0, max_duration=None, rings=500
 
 
 # ----------------------------------------------------------------------------- ball + rings plan
+def ring_speed(k):
+    """Every ring turns at its own speed (smoothly varying with k): the slits drift apart
+    and twist into a spiral instead of turning as one rigid block."""
+    return OMEGA * (1.0 + 0.15 * math.sin(2 * math.pi * k / 140.0) + 0.04 * math.sin(2 * math.pi * k / 37.0 + 1.0))
+
+
+def ring_half(k):
+    """Half-width of ring k's slit (jagged from ring to ring)."""
+    jag = math.radians(9) * (math.sin(k * 0.37) + 0.6 * math.sin(k * 1.13 + 1.7) + 0.35 * math.sin(k * 2.9)) \
+        + math.radians(7) * ((k * 7919) % 13) / 13
+    return HB * 0.8 + abs(jag)
+
+
+def split_count(total, weights):
+    w = np.array(weights, float)
+    raw = total * w / w.sum()
+    out = np.maximum(1, np.floor(raw)).astype(int)
+    while out.sum() > total:
+        out[np.argmax(out)] -= 1
+    for k in np.argsort(-(raw - np.floor(raw))):
+        if out.sum() >= total:
+            break
+        out[k] += 1
+    return [int(x) for x in out]
+
+
 def plan_escape(plan, beats_out):
+    """The ball bounces against the innermost ring (on the beats). Ring k breaks at time tau_k,
+    during the clear moments, at a steady pace. Its slit's starting angle is chosen so that the
+    slit is exactly under the ball at tau_k: phi_k = ball_angle(tau_k) - omega_k * tau_k.
+    While muffled, the bounces are solved so they never land in the wall ring's slit."""
     phases, finale, N = plan["phases"], plan["finale_s"], plan["rings"]
     rng = np.random.default_rng(5)
     Rb = RC - BALL_R - 3
-    segs = []                          # ("line", t0, t1, p0, p1) / ("ride", t0, t1)
-    hits = []
+    omega = np.array([ring_speed(k) for k in range(N)])
+    half = np.array([ring_half(k) for k in range(N)])
+    phi = np.zeros(N)
+    clears = [(t0, t1) for t0, t1, k in phases if k == "C"]
+    counts = split_count(N, [t1 - t0 for t0, t1 in clears]) if clears else []
+    DRIFT = math.radians(28)                              # the ball slides slowly along the wall while rings break
+
+    segs, hits, rides = [], [], []
+    kt, kd = [0.0], [0.0]
     cur_t, cur_p, cur_ang = 0.0, np.zeros(2), None
+    nxt_ring, ci = 0, 0
     cands = [math.radians(d) for d in range(95, 170, 6)]
 
-    def solve(times, final_ang, start_ang):
+    def solve(times, final_ang, start_ang, k):
         n = len(times)
         angs = [None] * n
         angs[-1] = final_ang
         budget = [20000]
 
-        def ok(a, t):
-            return abs(wrap(a - theta(t))) > HB + MARGIN
+        def ok(x, t):
+            g = phi[k] + omega[k] * t
+            return abs(wrap(x - g)) > half[k] + MARGIN
 
-        def rec(k):
-            if k < 0:
+        def rec(j):
+            if j < 0:
                 return True
             budget[0] -= 1
             if budget[0] < 0:
                 return False
             for o in rng.permutation(2 * len(cands)):
                 d = cands[o // 2] * (1 if o % 2 else -1)
-                x = angs[k + 1] - d
-                if not ok(x, times[k]):
+                x = angs[j + 1] - d
+                if not ok(x, times[j]):
                     continue
-                if k == 0 and start_ang is not None and abs(wrap(x - start_ang)) < math.radians(60):
+                if j == 0 and start_ang is not None and abs(wrap(x - start_ang)) < math.radians(60):
                     continue
-                angs[k] = x
-                if rec(k - 1):
+                angs[j] = x
+                if rec(j - 1):
                     return True
             return False
-        if not rec(n - 2):                               # very unlikely: fall back to plain steps
-            for k in range(n - 2, -1, -1):
-                angs[k] = angs[k + 1] - math.radians(137)
+        if not rec(n - 2):
+            for j in range(n - 2, -1, -1):
+                angs[j] = angs[j + 1] - math.radians(137)
         return angs
 
     for t0, t1, kind in phases:
         if kind == "M":
+            # where the ball will meet the next slit: across the circle from where it is now
+            a_meet = (cur_ang if cur_ang is not None else -math.pi / 2) + math.radians(rng.uniform(140, 220))
+            if nxt_ring < N:
+                phi[nxt_ring] = a_meet - omega[nxt_ring] * t1
             times = [float(b) for b in beats_out if t0 + 0.08 < b < t1 - 0.08] + [t1]
-            angs = solve(times, theta(t1), cur_ang)
-            for k, (tk, ak) in enumerate(zip(times, angs)):
-                last = k == len(times) - 1
+            angs = solve(times, a_meet, cur_ang, min(nxt_ring, N - 1))
+            for j, (tj, aj) in enumerate(zip(times, angs)):
+                last = j == len(times) - 1
                 r = RC if last else Rb
-                p = np.array([r * math.cos(ak), r * math.sin(ak)])
-                segs.append(("line", cur_t, tk, cur_p, p))
+                pt = np.array([r * math.cos(aj), r * math.sin(aj)])
+                segs.append(("line", cur_t, tj, cur_p, pt))
                 if not last:
-                    hits.append((tk, ak))
-                cur_t, cur_p = tk, p
-            cur_ang = theta(t1)
+                    hits.append((tj, aj, min(nxt_ring, N - 1)))
+                cur_t, cur_p = tj, pt
+            cur_ang = a_meet
+            kt += [t0, t1]
+            kd += [nxt_ring, nxt_ring]
         else:
-            if cur_t < t0 - 1e-6:                        # (only if the video starts clear)
-                p = np.array([RC * math.cos(theta(t0)), RC * math.sin(theta(t0))])
-                segs.append(("line", cur_t, t0, cur_p, p))
-            segs.append(("ride", t0, t1))
+            m = counts[ci] if ci < len(counts) else 0
+            ci += 1
+            a0 = cur_ang if cur_ang is not None else -math.pi / 2
+            sgn = 1 if (len(rides) % 2 == 0) else -1
+            if cur_t < t0 - 1e-6:
+                pt = np.array([RC * math.cos(a0), RC * math.sin(a0)])
+                segs.append(("line", cur_t, t0, cur_p, pt))
+            rides.append((t0, t1, a0, sgn * DRIFT))
+            segs.append(("ride", t0, t1, a0, sgn * DRIFT))
+            for j in range(m):
+                k = nxt_ring + j
+                if k >= N:
+                    break
+                tau = t0 + j * (t1 - t0) / m
+                phi[k] = a0 + sgn * DRIFT * (tau - t0) - omega[k] * tau
+            kt += [t0, t1]
+            kd += [nxt_ring, min(N, nxt_ring + m)]
+            nxt_ring = min(N, nxt_ring + m)
             cur_t = t1
-            cur_p = np.array([RC * math.cos(theta(t1)), RC * math.sin(theta(t1))])
-            cur_ang = theta(t1)
-    # after the last ring: the ball flies away
+            cur_ang = a0 + sgn * DRIFT * (t1 - t0)
+            cur_p = np.array([RC * math.cos(cur_ang), RC * math.sin(cur_ang)])
     d = cur_p / (np.linalg.norm(cur_p) + 1e-9)
     segs.append(("line", cur_t, cur_t + 1.6, cur_p, cur_p + d * 1400))
-
-    # rings broken over time: constant rate during the clear moments, 0 left at the finale
-    clear_total = sum(t1 - t0 for t0, t1, k in phases if k == "C")
-    kt, kd, acc = [0.0], [0.0], 0.0
-    for t0, t1, kind in phases:
-        if kind == "C":
-            kt += [t0, t1]
-            kd += [acc, acc + N * (t1 - t0) / clear_total]
-            acc = kd[-1]
-        else:
-            kt += [t0, t1]
-            kd += [acc, acc]
     kt.append(finale + 100)
     kd.append(float(N))
-    return dict(segs=segs, hits=hits, kt=np.array(kt), kd=np.array(kd))
+    return dict(segs=segs, hits=hits, kt=np.array(kt), kd=np.array(kd),
+                phi=phi, omega=omega, half=half)
 
 
 # ----------------------------------------------------------------------------- rendering (worker side)
+def gap_angle(k, t):
+    E = S.G["esc"]
+    return E["phi"][k] + E["omega"][k] * t
+
+
 def ball_pos(t):
-    for seg in S.G["esc"]["segs"]:
-        if t <= seg[2] or seg is S.G["esc"]["segs"][-1]:
+    segs = S.G["esc"]["segs"]
+    for seg in segs:
+        if t <= seg[2] or seg is segs[-1]:
             if seg[0] == "ride":
-                a = theta(t)
+                _, t0, t1, a0, v = seg
+                a = a0 + v * (min(max(t, t0), t1) - t0)
                 return CX + RC * math.cos(a), CY + RC * math.sin(a)
             _, t0, t1, p0, p1 = seg
             u = min(1.0, max(0.0, (t - t0) / max(1e-6, t1 - t0)))
@@ -253,27 +303,25 @@ def is_clear(t):
     return t >= S.G["finale"]
 
 
-def ring_style(i):
-    """Colour bands (accent / dark / light) and jagged slit width for ring #i."""
+def ring_colour(i):
+    """Colour bands (accent / dark / light) for ring #i."""
     cache = S.G.setdefault("_ring_cache", {})
     if i in cache:
         return cache[i]
     ar, ag, ab = S.G["accent"]
     ph = (i % 38) / 38
-    k = 0.5 + 0.5 * math.cos(2 * math.pi * ph)            # 1 = light band, 0 = dark band
+    k = 0.5 + 0.5 * math.cos(2 * math.pi * ph)
     light = (ar + (255 - ar) * 0.55, ag + (255 - ag) * 0.55, ab + (255 - ab) * 0.55)
     dark = (ar * 0.42, ag * 0.42, ab * 0.42)
     m = 0.5 + 0.5 * math.sin(2 * math.pi * ph * 2)
     base = tuple(dark[c] + (S.G["accent"][c] - dark[c]) * m for c in range(3))
-    col = tuple(base[c] + (light[c] - base[c]) * k * 0.7 for c in range(3))
-    jag = math.radians(9) * (math.sin(i * 0.37) + 0.6 * math.sin(i * 1.13 + 1.7) + 0.35 * math.sin(i * 2.9)) \
-        + math.radians(7) * ((i * 7919) % 13) / 13
-    cache[i] = (col, HB * 0.95 + abs(jag))
+    cache[i] = tuple(base[c] + (light[c] - base[c]) * k * 0.7 for c in range(3))
     return cache[i]
 
 
 def render_frame(i):
     G = S.G
+    E = G["esc"]
     skia = G["skia"]
     t = i / S.FPS
     pulse = float(G["pulse"][min(i, len(G["pulse"]) - 1)])
@@ -289,52 +337,52 @@ def render_frame(i):
 
     if t < finale + 0.8:
         fade = 1 - S.ease_out((t - finale) / 0.8) if t > finale else 1.0
-        th = theta(t)
-        first = int(math.floor(d)) + 1
+        first = int(math.ceil(d - 1e-9))
         last = min(N - 1, first + int((MAX_R - RC) / SP) + 2)
+        c.drawCircle(CX, CY, RC - 1, skia.Paint(AntiAlias=True, Color=skia.Color(8, 6, 9)))
         pa = skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=SP * 0.72)
-        for k in range(first, last + 1):
+        for k in range(last, first, -1):
             r = RC + (k - d) * SP
-            if r < RC + 2:
-                continue
-            col, half = ring_style(k)
-            centre = th + 0.0011 * (r - RC)                   # slight spiral
-            pa.setColor4f(rgba(*col, 0.95 * fade))
-            c.drawArc(skia.Rect(CX - r, CY - r, CX + r, CY + r), math.degrees(centre + half),
-                      360 - math.degrees(2 * half), False, pa)
-        # centre circle with its slit
-        c.drawCircle(CX, CY, RC - 2, skia.Paint(AntiAlias=True, Color=skia.Color(8, 6, 9)))
-        hit_glow = 0.0
-        for tk, ak in G["esc"]["hits"]:
-            if 0 <= t - tk < 0.3:
-                hit_glow = max(hit_glow, 1 - (t - tk) / 0.3)
-        for sig, wdt, al, col in ((14, 12, (0.35 + 0.5 * hit_glow) * fade, (ar, ag, ab)),
-                                  (0, 4.5, 0.95 * fade, (255, 255, 255))):
-            p = skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=wdt,
-                           StrokeCap=skia.Paint.kRound_Cap)
-            p.setColor4f(rgba(*col, al))
-            if sig:
-                p.setMaskFilter(skia.MaskFilter.MakeBlur(skia.kNormal_BlurStyle, sig))
-            c.drawArc(skia.Rect(CX - RC, CY - RC, CX + RC, CY + RC), math.degrees(th + HB),
-                      360 - math.degrees(2 * HB), False, p)
+            g, h = gap_angle(k, t), E["half"][k]
+            pa.setColor4f(rgba(*ring_colour(k), 0.95 * fade))
+            c.drawArc(skia.Rect(CX - r, CY - r, CX + r, CY + r), math.degrees(g + h),
+                      360 - math.degrees(2 * h), False, pa)
+        # the wall: innermost ring, white, with its slit — the ball bounces against it
+        if first < N:
+            r = RC + (first - d) * SP
+            g, h = gap_angle(first, t), E["half"][first]
+            hit_glow = 0.0
+            for tk, ak, kk in E["hits"]:
+                if 0 <= t - tk < 0.3:
+                    hit_glow = max(hit_glow, 1 - (t - tk) / 0.3)
+            for sig, wdt, al, col in ((14, 12, (0.35 + 0.5 * hit_glow) * fade, (ar, ag, ab)),
+                                      (0, 5, 0.97 * fade, (255, 255, 255))):
+                p = skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=wdt,
+                               StrokeCap=skia.Paint.kRound_Cap)
+                p.setColor4f(rgba(*col, al))
+                if sig:
+                    p.setMaskFilter(skia.MaskFilter.MakeBlur(skia.kNormal_BlurStyle, sig))
+                c.drawArc(skia.Rect(CX - r, CY - r, CX + r, CY + r), math.degrees(g + h),
+                          360 - math.degrees(2 * h), False, p)
         # bounce flashes
-        for tk, ak in G["esc"]["hits"]:
+        for tk, ak, kk in E["hits"]:
             dt = t - tk
             if 0 <= dt < 0.3:
                 q = skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=2)
                 q.setColor4f(rgba(255, 255, 255, 0.6 * (1 - dt / 0.3)))
                 c.drawCircle(CX + (RC - BALL_R - 3) * math.cos(ak), CY + (RC - BALL_R - 3) * math.sin(ak),
                              BALL_R + 34 * (dt / 0.3) ** 0.6, q)
-        # sparks flying out of the slit while rings break
+        # sparks: every broken ring throws a few out of the slit
         sp = skia.Paint(AntiAlias=True)
-        for j in range(36):
-            tau = t - j / 60
-            if tau < 0 or not is_clear(tau) or tau > finale:
+        for j in range(40):
+            tau = t - j / 66
+            if tau < 0 or tau > finale or not is_clear(tau):
                 continue
             age = t - tau
-            a0 = theta(tau) + 0.5 * math.sin(j * 12.9898 + tau * 7.0)
-            dist = RC + 30 + 900 * age * (0.6 + 0.4 * math.sin(j * 4.1 + 1.3) ** 2)
-            sp.setColor4f(rgba(255, 255, 255, 0.85 * (1 - age / 0.6)))
+            bx, by = ball_pos(tau)
+            a0 = math.atan2(by - CY, bx - CX) + 0.55 * math.sin(j * 12.9898 + tau * 7.0)
+            dist = RC + 20 + 900 * age * (0.6 + 0.4 * math.sin(j * 4.1 + 1.3) ** 2)
+            sp.setColor4f(rgba(255, 255, 255, 0.85 * max(0.0, 1 - age / 0.6)))
             c.drawCircle(CX + dist * math.cos(a0), CY + dist * math.sin(a0), 2.6, sp)
         # counter
         left = max(0, N - int(math.floor(d + 1e-6)))
