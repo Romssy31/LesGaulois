@@ -1,0 +1,4 @@
+.stem_reveal_cache/
+*.mp4
+*.plan.json
+__pycache__/

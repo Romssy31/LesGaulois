@@ -1,0 +1,14 @@
+numpy
+scipy
+soundfile
+librosa
+torch
+torchaudio
+demucs
+dora-search
+einops
+julius
+openunmix
+pyyaml
+tqdm
+skia-python
