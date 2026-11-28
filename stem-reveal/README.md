@@ -51,6 +51,12 @@ Une bille part du centre, rebondit sur chaque temps et sort d'un anneau à chaqu
 
 Les vidéos sont enregistrées dans `projects/videos/`.
 
+**Récupérer la vidéo sur iPhone :** quand la vidéo est prête, un QR code s'affiche. Connecte l'iPhone au même Wi-Fi que le PC,
+vise le QR code avec l'Appareil photo et ouvre le lien, puis touche « Télécharger la vidéo ». Ensuite, dans l'app Fichiers →
+Téléchargements, touche la vidéo → Partager → Enregistrer la vidéo : elle arrive dans Photos, prête pour TikTok.
+La première fois, Windows demande d'autoriser Python sur le réseau : coche « Réseaux privés » et accepte.
+Depuis le Wi-Fi, seules les vidéos terminées sont accessibles (avec un code secret dans le lien), pas le reste du logiciel.
+
 **Tout est calé sur la musique :**
 - chaque changement d'étape tombe exactement sur un début de mesure ;
 - la bille rebondit sur chaque temps ;

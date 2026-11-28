@@ -17,6 +17,14 @@ if not exist ".venv\installed.ok" (
   ".venv\Scripts\python.exe" -m pip install --upgrade pip
   ".venv\Scripts\python.exe" -m pip install -r requirements.txt || goto fail
   echo ok> ".venv\installed.ok"
+  copy /y requirements.txt ".venv\requirements.installed" >nul
+)
+
+fc /b requirements.txt ".venv\requirements.installed" >nul 2>nul
+if errorlevel 1 (
+  echo  Mise a jour des composants...
+  ".venv\Scripts\python.exe" -m pip install -r requirements.txt || goto fail
+  copy /y requirements.txt ".venv\requirements.installed" >nul
 )
 
 ".venv\Scripts\python.exe" app.py

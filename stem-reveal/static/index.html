@@ -182,7 +182,16 @@
     <h2><span class="step">4</span> Vidéo prête</h2>
     <div class="result">
       <div><video id="video" controls playsinline></video><a class="dl" id="dl" href="#">Télécharger la vidéo</a></div>
-      <div><table id="plan-table"></table></div>
+      <div>
+        <div id="phone" class="hidden" style="margin-bottom:18px">
+          <b>📱 Sur ton iPhone</b>
+          <div class="hint" style="margin:4px 0 10px">Connecte l'iPhone au <b>même Wi-Fi</b> que ce PC, ouvre l'<b>Appareil photo</b> et vise ce QR code,
+          puis touche le lien. Sur la page, touche « Télécharger la vidéo ».</div>
+          <div id="qr" style="display:inline-block;background:#fff;border-radius:10px;padding:6px;line-height:0"></div>
+          <div class="hint" style="margin-top:6px">ou tape dans Safari : <b id="qr-url"></b></div>
+        </div>
+        <table id="plan-table"></table>
+      </div>
     </div>
   </div>
 </div>
@@ -549,8 +558,20 @@ $("go").onclick = async () => {
   } catch (e) { $("go").disabled = false; $("render-status").classList.add("err"); $("render-status").textContent = "Erreur : " + e.message; }
 };
 
+async function showPhone(res) {
+  $("phone").classList.add("hidden");
+  if (!res.share) return;
+  try {
+    const q = await api(`/api/qr/${res.share}`);
+    $("qr").innerHTML = q.svg || "";
+    $("qr").style.display = q.svg ? "" : "none";
+    $("qr-url").textContent = q.url;
+    $("phone").classList.remove("hidden");
+  } catch (e) { /* phone link is optional */ }
+}
 function showResult(res) {
   $("c-result").classList.remove("hidden");
+  showPhone(res);
   $("video").src = res.video_url;
   $("dl").href = res.video_url + "?dl=1";
   $("dl").setAttribute("download", res.filename);

@@ -7,3 +7,4 @@ demucs>=4.1
 skia-python
 flask
 imageio-ffmpeg
+segno

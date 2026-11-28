@@ -6,7 +6,10 @@ Drop a song, it separates the stems, finds tempo / bars / the hook, lets you
 check or move the hook on the waveform, previews the audio edit and renders
 the video.
 """
+import html
 import os
+import secrets
+import socket
 import sys
 import threading
 import time
@@ -31,6 +34,8 @@ for d in (UPLOADS, OUTPUT, CACHE):
 
 app = Flask(__name__, static_folder=os.path.join(HERE, "static"), static_url_path="/static")
 SONGS = {}           # song_id -> analysis context (kept in memory)
+SHARES = {}          # token -> video file name (phone download links)
+PORT = int(os.environ.get("STEM_REVEAL_PORT", "7860"))
 JOBS = {}            # job_id -> {state, stage, progress, message, result}
 HEAVY = threading.Lock()   # one separation / render at a time
 
@@ -104,11 +109,106 @@ def render_job(job, sid, hook, timing, opts, mode="layers"):
         job["progress"] = 0.03 + 0.95 * f
     if mode == "escape":
         plan = ESC.make_escape_video(ctx, out, hook, opts, progress=progress, **timing)
-        return dict(video_url="/files/videos/" + fname, filename=fname, plan=plan)
+        return finished(fname, plan)
     plan = SR.make_video(ctx, out, hook, timing["min_duration"], opts, progress=progress,
                          max_duration=timing["max_duration"], stage_bars=timing["stage_bars"],
                          full_bars=timing["full_bars"], range_bars=timing["range_bars"])
-    return dict(video_url="/files/videos/" + fname, filename=fname, plan=plan)
+    return finished(fname, plan)
+
+
+def finished(fname, plan):
+    token = secrets.token_urlsafe(9)
+    SHARES[token] = fname
+    return dict(video_url="/files/videos/" + fname, filename=fname, plan=plan, share=token,
+                phone_url=f"http://{lan_ip()}:{PORT}/m/{token}")
+
+
+# ----------------------------------------------------------------------------- phone download (same Wi-Fi)
+def lan_ip():
+    """This computer's address on the local network (what the phone must open)."""
+    s_ = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s_.connect(("10.255.255.255", 1))          # no packet is sent, it only picks the right interface
+        return s_.getsockname()[0]
+    except OSError:
+        return socket.gethostbyname(socket.gethostname())
+    finally:
+        s_.close()
+
+
+@app.before_request
+def only_phone_pages_from_network():
+    """Other devices on the Wi-Fi only get the phone page of a finished video (with its secret
+    token) and that video file. Everything else stays reachable from this computer only."""
+    if request.remote_addr in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+        return None
+    path = request.path
+    if path.startswith("/m/") and path[3:] in SHARES:
+        return None
+    if path.startswith("/files/videos/") and SHARES.get(request.args.get("t")) == path[len("/files/videos/"):]:
+        return None
+    abort(403)
+
+
+@app.get("/api/qr/<token>")
+def qr(token):
+    if token not in SHARES:
+        abort(404)
+    url = f"http://{lan_ip()}:{PORT}/m/{token}"
+    try:
+        import segno
+        svg = segno.make(url, error="m").svg_inline(scale=6, border=2, dark="#0b0f18", light="#ffffff")
+    except ImportError:
+        svg = ""
+    return jsonify(url=url, svg=svg)
+
+
+@app.get("/m/<token>")
+def phone_page(token):
+    name = SHARES.get(token) or abort(404)
+    src = f"/files/videos/{name}?t={token}"
+    return PHONE_PAGE.replace("{{SRC}}", html.escape(src, quote=True)).replace("{{NAME}}", html.escape(name))
+
+
+PHONE_PAGE = """<!doctype html><html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Stem Reveal</title>
+<style>
+ body{margin:0;background:#070a10;color:#e8edf6;font:16px/1.45 -apple-system,system-ui,sans-serif;padding:16px}
+ h1{font-size:20px;margin:4px 0 12px} video{width:100%;border-radius:14px;background:#000;max-height:60vh}
+ .btn{display:block;width:100%;box-sizing:border-box;margin-top:14px;padding:15px;border:0;border-radius:12px;
+      font:700 17px -apple-system,system-ui;text-align:center;text-decoration:none;background:#9fb4ff;color:#0b0f18}
+ .alt{background:#151c28;color:#e8edf6;border:1px solid #222b3a}
+ ol{color:#8b96a8;font-size:15px;padding-left:20px;margin-top:18px} li{margin-bottom:8px} b{color:#e8edf6}
+ #msg{color:#7fe0a8;font-size:14px;min-height:20px;margin-top:8px}
+ [hidden]{display:none!important}
+</style></head><body>
+<h1>Ta vidéo est prête</h1>
+<video src="{{SRC}}" controls playsinline preload="metadata"></video>
+<button class="btn" id="save" hidden>Enregistrer dans Photos</button>
+<a class="btn" id="dl" href="{{SRC}}&dl=1" download="{{NAME}}">Télécharger la vidéo</a>
+<div id="msg"></div>
+<ol id="steps">
+ <li>Touche <b>Télécharger la vidéo</b>, puis <b>Télécharger</b> si Safari le demande.</li>
+ <li>Ouvre l'app <b>Fichiers</b> → <b>Téléchargements</b> et touche la vidéo.</li>
+ <li>Touche <b>Partager</b> (le carré avec la flèche) → <b>Enregistrer la vidéo</b> : elle arrive dans <b>Photos</b>.</li>
+ <li>Dans TikTok : <b>+</b> → <b>Importer</b> et choisis la vidéo.</li>
+</ol>
+<script>
+// Direct "save to Photos" (share sheet with the file) is only allowed on secure pages.
+const msg = document.getElementById("msg"), save = document.getElementById("save");
+if (window.isSecureContext && navigator.canShare) {
+  save.hidden = false; document.getElementById("dl").className = "btn alt";
+  save.onclick = async () => {
+    try {
+      msg.textContent = "Préparation de la vidéo…";
+      const blob = await (await fetch("{{SRC}}")).blob();
+      const file = new File([blob], "{{NAME}}", { type: "video/mp4" });
+      if (navigator.canShare({ files: [file] })) { await navigator.share({ files: [file] }); msg.textContent = ""; }
+      else msg.textContent = "Utilise « Télécharger la vidéo ».";
+    } catch (e) { msg.textContent = e.name === "AbortError" ? "" : "Utilise « Télécharger la vidéo »."; }
+  };
+}
+</script></body></html>"""
 
 
 # ----------------------------------------------------------------------------- routes
@@ -177,12 +277,13 @@ def files(sub, name):
 
 
 def main():
-    port = int(os.environ.get("STEM_REVEAL_PORT", "7860"))
-    url = f"http://127.0.0.1:{port}"
-    print(f"\n  Stem Reveal is running: {url}\n  (close this window to stop it)\n", flush=True)
+    url = f"http://127.0.0.1:{PORT}"
+    print(f"\n  Stem Reveal is running: {url}\n  (close this window to stop it)\n"
+          f"  Phone download links use http://{lan_ip()}:{PORT} (same Wi-Fi)\n", flush=True)
     if os.environ.get("STEM_REVEAL_NO_BROWSER") != "1":
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()
-    app.run(host="127.0.0.1", port=port, threaded=True, debug=False)
+    # listen on the local network too, so the phone can fetch finished videos (see before_request)
+    app.run(host="0.0.0.0", port=PORT, threaded=True, debug=False)
 
 
 if __name__ == "__main__":

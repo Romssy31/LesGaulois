@@ -18,4 +18,8 @@ if [ ! -f .venv/installed.ok ]; then
     echo "L'installation a échoué (vérifie ta connexion internet) puis relance."
     read -r -p "Appuie sur Entrée pour fermer…"; exit 1; }
 fi
+if ! cmp -s requirements.txt .venv/requirements.installed; then
+  echo "Mise à jour des composants…"
+  .venv/bin/python -m pip install -r requirements.txt && cp requirements.txt .venv/requirements.installed
+fi
 .venv/bin/python app.py
